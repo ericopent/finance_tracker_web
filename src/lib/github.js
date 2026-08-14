@@ -81,6 +81,15 @@ async function gh(path, opts = {}) {
     e.code = 404
     throw e
   }
+  if (res.status === 409 || res.status === 422) {
+    // conflito de sha — quem chama (readModifyWrite) relê e tenta de novo
+    const e = new Error(
+      'Alguém (ou outro aparelho) gravou nesse arquivo ao mesmo tempo. ' +
+      'Tentei reaplicar e não consegui — recarregue e refaça.'
+    )
+    e.code = res.status
+    throw e
+  }
   if (!res.ok) {
     const t = await res.text().catch(() => '')
     const e = new Error(`GitHub ${res.status}: ${t.slice(0, 200)}`)
@@ -179,49 +188,85 @@ export async function writeFile(path, text, sha, message) {
   })
 }
 
+// ---------------------------------------------------------------- escrita concorrente
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+
 /**
- * Append numa linha de JSONL, com retry em conflito.
+ * Fila por arquivo.
  *
- * Dois aparelhos podem gravar quase junto; o segundo PUT leva 409 porque o sha
- * envelheceu. Reler-e-reaplicar resolve sem perder lancamento — o que NAO pode
- * acontecer e o segundo sobrescrever o primeiro em silencio.
+ * Dois toques seguidos (confirmar dois recorrentes em sequencia) faziam o
+ * segundo LER o sha antes de o primeiro terminar de GRAVAR — os dois mandavam
+ * o mesmo sha e o segundo levava 409. Serializar por caminho elimina a corrida
+ * na origem; o retry abaixo cobre so o resto (outro aparelho, ou leitura
+ * obsoleta da API logo apos um PUT).
  */
-export async function appendJsonl(path, obj, message, tries = 3) {
-  for (let i = 0; i < tries; i++) {
-    const cur = await readFile(path)
-    const base = cur?.text ?? ''
-    const sep = base && !base.endsWith('\n') ? '\n' : ''
-    const next = base + sep + JSON.stringify(obj) + '\n'
-    try {
-      return await writeFile(path, next, cur?.sha, message)
-    } catch (e) {
-      const conflict = e.code === 409 || e.code === 422
-      if (!conflict || i === tries - 1) throw e
-      await new Promise((r) => setTimeout(r, 300 * (i + 1)))
-    }
-  }
+const filas = new Map()
+function serial(path, fn) {
+  const anterior = filas.get(path) ?? Promise.resolve()
+  const proxima = anterior.catch(() => {}).then(fn)
+  filas.set(path, proxima.catch(() => {}))
+  return proxima
 }
 
-/** Reescreve o JSONL sem uma linha (usado pra apagar lancamento). */
-export async function rewriteJsonl(path, keepFn, message, tries = 3) {
-  for (let i = 0; i < tries; i++) {
-    const cur = await readFile(path)
-    if (!cur) return null
-    const kept = cur.text
-      .split('\n')
-      .filter((l) => l.trim())
-      .map((l) => { try { return JSON.parse(l) } catch { return null } })
-      .filter(Boolean)
-      .filter(keepFn)
-    const next = kept.map((o) => JSON.stringify(o)).join('\n') + (kept.length ? '\n' : '')
-    try {
-      return await writeFile(path, next, cur.sha, message)
-    } catch (e) {
-      const conflict = e.code === 409 || e.code === 422
-      if (!conflict || i === tries - 1) throw e
-      await new Promise((r) => setTimeout(r, 300 * (i + 1)))
+/**
+ * Le-muta-grava com retry em conflito.
+ *
+ * `mutate` PRECISA ser reaplicavel: em conflito, relemos o arquivo do zero e
+ * chamamos de novo. Por isso as mutacoes sao "filtra e insere", nunca
+ * "incrementa" — reaplicar um incremento contaria duas vezes.
+ */
+async function readModifyWrite(path, transform, message, tries = 4) {
+  return serial(path, async () => {
+    let ultimo
+    for (let i = 0; i < tries; i++) {
+      const cur = await readFile(path)
+      const next = transform(cur?.text ?? null)
+      if (next === null) return null
+      try {
+        return await writeFile(path, next, cur?.sha, message)
+      } catch (e) {
+        ultimo = e
+        const conflito = e.code === 409 || e.code === 422
+        if (!conflito || i === tries - 1) throw e
+        await sleep(400 * (i + 1)) // o sha da API demora um pouco a estabilizar
+      }
     }
-  }
+    throw ultimo
+  })
+}
+
+/** Append numa linha de JSONL. */
+export async function appendJsonl(path, obj, message) {
+  return readModifyWrite(path, (base) => {
+    const b = base ?? ''
+    const sep = b && !b.endsWith('\n') ? '\n' : ''
+    return b + sep + JSON.stringify(obj) + '\n'
+  }, message)
+}
+
+/** Le, muta e grava um JSON inteiro. */
+export async function updateJson(path, mutate, message, vazio = {}) {
+  return readModifyWrite(path, (text) => {
+    let obj
+    try { obj = text ? JSON.parse(text) : { ...vazio } } catch { obj = { ...vazio } }
+    mutate(obj)
+    return JSON.stringify(obj, null, 2)
+  }, message)
+}
+
+/** Sobrescreve um JSON inteiro (fatura importada), com sha fresco e retry. */
+export async function putJson(path, obj, message) {
+  return readModifyWrite(path, () => JSON.stringify(obj), message)
+}
+
+/** Reescreve o JSONL sem certas linhas (apagar lancamento, reconciliar). */
+export async function rewriteJsonl(path, keepFn, message) {
+  return readModifyWrite(path, (text) => {
+    if (text === null) return null
+    const kept = parseJsonl(text).filter(keepFn)
+    return kept.map((o) => JSON.stringify(o)).join('\n') + (kept.length ? '\n' : '')
+  }, message)
 }
 
 export function parseJsonl(text) {

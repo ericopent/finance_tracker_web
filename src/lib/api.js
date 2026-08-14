@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
-  readFile, writeFile, appendJsonl, rewriteJsonl, parseJsonl, listDir, getToken,
+  readFile, appendJsonl, rewriteJsonl, updateJson, putJson, parseJsonl, listDir, getToken,
 } from './github'
 import { monthView, cashflow, hydrate, merchantKey } from './engine'
 import { todayISO } from './money'
@@ -159,14 +159,21 @@ export function useDeleteTxn() {
   )
 }
 
-/** Le, muta e grava o config.json com o sha corrente. */
-async function saveConfig(mutate, message) {
-  const cur = await readFile(P_CONFIG)
-  const cfg = cur ? JSON.parse(cur.text) : { recurring: [], rules: [], memory: {} }
-  cfg.recurring ??= []
-  cfg.memory ??= {}
-  mutate(cfg)
-  await writeFile(P_CONFIG, JSON.stringify(cfg, null, 2), cur?.sha, message)
+/**
+ * Grava o config.json. Delega o le-muta-grava pro github.js, que serializa por
+ * arquivo e faz retry — dois toques seguidos batiam 409 de sha.
+ *
+ * As mutacoes abaixo sao "filtra e insere" de proposito: em conflito o arquivo
+ * e relido e a mutacao REAPLICADA, entao ela precisa dar o mesmo resultado
+ * rodando duas vezes.
+ */
+function saveConfig(mutate, message) {
+  return updateJson(P_CONFIG, (cfg) => {
+    cfg.recurring ??= []
+    cfg.memory ??= {}
+    cfg.rules ??= []
+    mutate(cfg)
+  }, message, { recurring: [], rules: [], memory: {} })
 }
 
 export function useConfirmRecurring() {
@@ -204,9 +211,8 @@ export function useDismissRecurring() {
 export function useSaveStatement() {
   return useDatasetMutation(async ({ ref, txns, aprendidos, reconciliados }) => {
     const path = `${D_STMT}/${ref}.json`
-    const cur = await readFile(path)
     const body = { ref, generated: new Date().toISOString(), txns }
-    await writeFile(path, JSON.stringify(body), cur?.sha, `fatura ${ref} (${txns.length} lançamentos)`)
+    await putJson(path, body, `fatura ${ref} (${txns.length} lançamentos)`)
 
     if (aprendidos && Object.keys(aprendidos).length) {
       await saveConfig((cfg) => {
