@@ -87,7 +87,21 @@ export function outflow(kind, cents) {
  * Fatura importada pelo app SUBSTITUI o mesmo mes do baseline em vez de somar.
  * Sem isso, reimportar um mes que ja veio do backfill contaria tudo duas vezes.
  */
-export function hydrate(ledger, manual = [], statements = []) {
+export function hydrate(ledger, manual = [], statements = [], config = null) {
+  /*
+   * A memoria e aplicada na LEITURA, nao gravada dentro de cada fatura.
+   *
+   * Assim, classificar "Ze Delivery" uma vez conserta todos os meses em que ele
+   * aparece — inclusive os ja importados — sem reescrever arquivo nenhum. Se a
+   * categoria fosse gravada na fatura, corrigir um erro exigiria reimportar
+   * tudo.
+   */
+  const mem = config?.memory ?? {}
+  const comMemoria = (t) => {
+    if (t.cat || !t.mkey) return t
+    const m = mem[t.mkey]
+    return m ? { ...t, cat: m[0] ?? null, sub: m[1] ?? null } : t
+  }
   const substituidos = new Set(statements.map((s) => s.ref))
   const out = (ledger?.txns ?? [])
     .filter((r) => !substituidos.has(r[10]))
@@ -104,15 +118,15 @@ export function hydrate(ledger, manual = [], statements = []) {
     igrp: r[9] == null ? null : (ledger.groups?.[r[9]] ?? String(r[9])),
     cash: r[10],
     source: 'import',
-  }))
+  })).map(comMemoria)
 
   // faturas importadas pelo app: ja vem no formato de objeto
   for (const st of statements) {
-    for (const t of st.txns ?? []) out.push({ ...t, source: 'import' })
+    for (const t of st.txns ?? []) out.push(comMemoria({ ...t, source: 'import' }))
   }
 
   for (const m of manual) {
-    out.push({
+    out.push(comMemoria({
       date: m.date,
       desc: m.desc,
       mkey: m.mkey ?? merchantKey(m.desc),
@@ -126,7 +140,7 @@ export function hydrate(ledger, manual = [], statements = []) {
       cash: m.date.slice(0, 7), // sem fatura: caixa = competencia
       source: 'manual',
       id: m.id,
-    })
+    }))
   }
   return out
 }
@@ -297,7 +311,7 @@ function dayCurve(txns, exclude, currentMonth) {
 /** `ds` = { ledger, config, manual, statements } */
 export function monthView(ds, todayISO) {
   const { ledger, config, manual = [], statements = [] } = ds ?? {}
-  const txns = hydrate(ledger, manual, statements)
+  const txns = hydrate(ledger, manual, statements, config)
   // a fatura mais recente pode ter vindo do app, nao do backfill
   const last = [ledger?.last_statement, ...statements.map((s) => s.ref)]
     .filter(Boolean)
@@ -486,7 +500,7 @@ export function monthView(ds, todayISO) {
 
 export function cashflow(ds, fromMonth, horizon = 12, openingCents = 0) {
   const { ledger, config, manual = [], statements = [] } = ds ?? {}
-  const txns = hydrate(ledger, manual, statements)
+  const txns = hydrate(ledger, manual, statements, config)
   const last = [ledger?.last_statement, ...statements.map((s) => s.ref)]
     .filter(Boolean)
     .sort()

@@ -97,7 +97,7 @@ export function useSuggest(q) {
   if (term.length < 2 || !ds.data) return []
   const key = merchantKey(term)
   const by = new Map()
-  for (const t of hydrate(ds.data.ledger, ds.data.manual, ds.data.statements)) {
+  for (const t of hydrate(ds.data.ledger, ds.data.manual, ds.data.statements, ds.data.config)) {
     if (t.kind !== 'purchase' || !t.mkey.includes(key)) continue
     const g = by.get(t.desc) ?? {
       description: t.desc, category: t.cat, subcategory: t.sub,
@@ -121,12 +121,56 @@ export function useCategorias() {
   const ds = useDataset()
   if (!ds.data) return []
   const set = new Map()
-  for (const t of hydrate(ds.data.ledger, ds.data.manual, ds.data.statements)) {
+  for (const t of hydrate(ds.data.ledger, ds.data.manual, ds.data.statements, ds.data.config)) {
     if (!t.cat) continue
     const k = t.sub ? `${t.cat}|${t.sub}` : t.cat
     set.set(k, (set.get(k) ?? 0) + 1)
   }
   return [...set.entries()].sort((a, b) => b[1] - a[1]).map(([k]) => k)
+}
+
+/**
+ * Gastos sem categoria, agrupados por lojista.
+ *
+ * Agrupar importa: sao ~700 lancamentos orfaos, mas poucas dezenas de lojistas.
+ * Uma decisao resolve todas as ocorrencias, passadas e futuras. Ordenado por
+ * valor pra voce atacar o que move o ponteiro primeiro.
+ */
+export function useNaoClassificados(meses = 12) {
+  const ds = useDataset()
+  if (!ds.data) return { grupos: [], total: 0, n: 0 }
+  const txns = hydrate(ds.data.ledger, ds.data.manual, ds.data.statements, ds.data.config)
+  const cortes = [...new Set(txns.map((t) => t.cash))].sort().slice(-meses)
+  const janela = new Set(cortes)
+
+  const by = new Map()
+  let total = 0
+  let n = 0
+  for (const t of txns) {
+    if (t.kind !== 'purchase' || t.cat || !t.mkey || !janela.has(t.cash)) continue
+    const g = by.get(t.mkey) ?? { key: t.mkey, label: t.desc, n: 0, cents: 0, ultimo: '', exemplos: [] }
+    g.n++
+    g.cents += t.cents
+    if (t.date > g.ultimo) { g.ultimo = t.date; g.label = t.desc }
+    if (g.exemplos.length < 3) g.exemplos.push(t.desc)
+    by.set(t.mkey, g)
+    total += t.cents
+    n++
+  }
+  return {
+    grupos: [...by.values()].sort((a, b) => b.cents - a.cents),
+    total,
+    n,
+  }
+}
+
+/** Ensina a categoria de um lojista — vale retroativo, pra todo o histórico. */
+export function useLearnMerchant() {
+  return useDatasetMutation(({ key, category, subcategory }) =>
+    saveConfig((cfg) => {
+      cfg.memory[key] = [category, subcategory ?? null]
+    }, `classifica ${key} como ${category}`)
+  )
 }
 
 // ---------------------------------------------------------------- escrita
