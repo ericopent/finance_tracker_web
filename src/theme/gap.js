@@ -19,9 +19,23 @@ export const GAP_SERIES = [
   '#f59e0b', '#0ea5e9', '#ec4899', '#14b8a6', '#64748b',
 ]
 
+/**
+ * Casas decimais sempre sanitizadas.
+ *
+ * Sem isso, escrever `fmt: money` em vez de `fmt: (c) => money(c)` explode: o
+ * GapTable chama `fmt(valor, linha)` e o OBJETO da linha vira o `dec`, e o
+ * Intl responde "invalid digits value: NaN" — o mesmo pe na jaca de
+ * `['1','2','3'].map(parseInt)`. Formatador nao deve derrubar tela por isso.
+ */
+function safeDec(dec, fallback = 2) {
+  const n = Number(dec)
+  return Number.isFinite(n) ? Math.min(20, Math.max(0, Math.trunc(n))) : fallback
+}
+
 export function brNum(x, dec = 2) {
   if (x === null || x === undefined || Number.isNaN(Number(x))) return '—'
-  return Number(x).toLocaleString('pt-BR', { minimumFractionDigits: dec, maximumFractionDigits: dec })
+  const d = safeDec(dec)
+  return Number(x).toLocaleString('pt-BR', { minimumFractionDigits: d, maximumFractionDigits: d })
 }
 
 export function brSigned(x, dec = 1) {

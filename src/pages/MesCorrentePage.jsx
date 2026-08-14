@@ -214,7 +214,7 @@ export default function MesCorrentePage() {
               { key: 'label', label: 'Contrato', align: 'left', fmt: (x) => <span className="truncate block max-w-[230px]" title={x}>{x}</span> },
               { key: 'number', label: 'Parcela', fmt: (_, r) => `${r.number}/${r.total}` },
               { key: 'remaining', label: 'Restam', fmt: (x) => `${x}` },
-              { key: 'cents', label: 'Valor', align: 'right', fmt: money },
+              { key: 'cents', label: 'Valor', align: 'right', fmt: (c) => money(c) },
             ]}
             rows={v.installments}
           />
@@ -234,7 +234,7 @@ export default function MesCorrentePage() {
             columns={[
               { key: 'label', label: 'Item', align: 'left', fmt: (x) => <span className="truncate block max-w-[210px]" title={x}>{x}</span> },
               { key: 'declared', label: 'Origem', fmt: (d, r) => d ? 'cadastrado' : `${r.months_seen}/6 meses` },
-              { key: 'cents', label: 'Valor', align: 'right', fmt: money },
+              { key: 'cents', label: 'Valor', align: 'right', fmt: (c) => money(c) },
             ]}
             rows={v.subscriptions}
           />
@@ -256,7 +256,7 @@ export default function MesCorrentePage() {
             { key: 'date', label: 'Data', fmt: (x) => x?.slice(8, 10) + '/' + x?.slice(5, 7) },
             { key: 'desc', label: 'Onde', align: 'left' },
             { key: 'cat', label: 'Categoria', fmt: (x, r) => x ? `${x}${r.sub ? ` · ${r.sub}` : ''}` : '—' },
-            { key: 'cents', label: 'Valor', align: 'right', fmt: money },
+            { key: 'cents', label: 'Valor', align: 'right', fmt: (c) => money(c) },
             {
               key: 'id', label: '', fmt: (id) => (
                 <button
