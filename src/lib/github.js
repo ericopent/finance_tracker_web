@@ -63,7 +63,16 @@ async function gh(path, opts = {}) {
   })
   if (res.status === 401) throw new Error('Token inválido ou expirado. Gere outro no github.com.')
   if (res.status === 403) {
-    throw new Error('Token sem permissão de Contents (Read and write) nesse repositório.')
+    // Distinguir leitura de escrita importa: o caso comum e token criado com
+    // Contents "Read-only", que le tudo e falha so na hora de gravar.
+    const escrita = opts.method && opts.method !== 'GET'
+    throw new Error(
+      escrita
+        ? 'Token é somente leitura.\n\nNo GitHub, edite o token e ponha ' +
+          'Repository permissions → Contents em "Read and write" (não "Read-only"). ' +
+          'Depois recarregue.'
+        : 'Token sem permissão de leitura em Contents nesse repositório.'
+    )
   }
   if (res.status === 404) {
     // Pode ser arquivo inexistente (esperado em manual.jsonl no 1o uso) ou

@@ -1,4 +1,6 @@
-import { Trash2, Lock, Repeat, PencilLine, TrendingUp, Check, X, HelpCircle } from 'lucide-react'
+import { useState } from 'react'
+import clsx from 'clsx'
+import { Trash2, Lock, Repeat, PencilLine, TrendingUp, Check, X, HelpCircle, Loader2 } from 'lucide-react'
 import PageHeader from '../components/PageHeader'
 import KpiGrid from '../components/KpiGrid'
 import GapTable from '../components/GapTable'
@@ -107,7 +109,19 @@ function Faixa({ v }) {
 function Candidatos({ itens }) {
   const ok = useConfirmRecurring()
   const no = useDismissRecurring()
+  // qual linha esta gravando — cada clique vira um commit no GitHub, que leva
+  // ~1s. Sem estado visivel, o toque parece nao ter funcionado.
+  const [busy, setBusy] = useState(null)
+  const erro = ok.error ?? no.error
+
   if (!itens?.length) return null
+
+  const agir = async (mut, arg, key) => {
+    setBusy(key)
+    try { await mut.mutateAsync(arg) } catch { /* mostrado no bloco de erro */ }
+    finally { setBusy(null) }
+  }
+
   return (
     <div className="gap-card p-3.5 border-l-4 border-l-[#f59e0b]">
       <div className="text-[12px] font-semibold text-gap-navy mb-1 flex items-center gap-1.5">
@@ -118,26 +132,51 @@ function Candidatos({ itens }) {
         Aparece com regularidade mas ainda não tem histórico suficiente pra entrar
         sozinho no travado. Confirmando, passa a contar todo mês.
       </div>
+
+      {erro && (
+        <div className="mb-2.5 text-[12px] text-gap-red border border-gap-red/30 bg-gap-red/5 rounded-md px-2.5 py-2 whitespace-pre-line leading-relaxed">
+          {String(erro.message ?? erro)}
+        </div>
+      )}
+
       <div className="flex flex-col gap-1.5">
-        {itens.map((c) => (
-          <div key={c.key} className="flex items-center gap-2 text-[12.5px] border border-gap-border rounded-md px-2.5 py-1.5">
-            <span className="truncate flex-1" title={c.label}>{c.label}</span>
-            <span className="text-gap-muted text-[11px] whitespace-nowrap">
-              {c.months_seen}/6 meses · cv {brNum(c.cv, 2)}
-            </span>
-            <span className="num font-semibold whitespace-nowrap">{money(c.cents)}</span>
-            <button
-              className="text-gap-green hover:bg-gap-green/10 rounded p-1 transition-colors"
-              title="é recorrente"
-              onClick={() => ok.mutate({ label: c.label, key: c.key, cents: c.cents, category: c.category ?? null })}
-            ><Check size={14} /></button>
-            <button
-              className="text-gap-muted hover:text-gap-red hover:bg-gap-red/10 rounded p-1 transition-colors"
-              title="não é — parar de sugerir"
-              onClick={() => no.mutate(c.key)}
-            ><X size={14} /></button>
-          </div>
-        ))}
+        {itens.map((c) => {
+          const gravando = busy === c.key
+          return (
+            <div
+              key={c.key}
+              className={clsx(
+                'flex items-center gap-2 text-[12.5px] border border-gap-border rounded-md px-2.5 py-1.5 transition-opacity',
+                gravando && 'opacity-50'
+              )}
+            >
+              <span className="truncate flex-1" title={c.label}>{c.label}</span>
+              <span className="hidden sm:inline text-gap-muted text-[11px] whitespace-nowrap">
+                {c.months_seen}/6 meses · cv {brNum(c.cv, 2)}
+              </span>
+              <span className="num font-semibold whitespace-nowrap">{money(c.cents)}</span>
+              {gravando ? (
+                <Loader2 size={15} className="animate-spin text-gap-blue shrink-0" />
+              ) : (
+                <>
+                  {/* p-2 e nao p-1: alvo de toque de ~32px, dedo nao acerta 20px */}
+                  <button
+                    className="text-gap-green hover:bg-gap-green/10 active:bg-gap-green/20 rounded p-2 -m-0.5 transition-colors disabled:opacity-40"
+                    title="é recorrente" aria-label={`confirmar ${c.label}`}
+                    disabled={!!busy}
+                    onClick={() => agir(ok, { label: c.label, key: c.key, cents: c.cents, category: c.category ?? null }, c.key)}
+                  ><Check size={15} /></button>
+                  <button
+                    className="text-gap-muted hover:text-gap-red hover:bg-gap-red/10 active:bg-gap-red/20 rounded p-2 -m-0.5 transition-colors disabled:opacity-40"
+                    title="não é — parar de sugerir" aria-label={`dispensar ${c.label}`}
+                    disabled={!!busy}
+                    onClick={() => agir(no, c.key, c.key)}
+                  ><X size={15} /></button>
+                </>
+              )}
+            </div>
+          )
+        })}
       </div>
     </div>
   )
