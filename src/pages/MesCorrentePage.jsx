@@ -65,7 +65,7 @@ function Faixa({ v }) {
   const max = Math.max(...pts.map((p) => p.c), base) * 1.08 || 1
   return (
     <div className="gap-card p-3.5">
-      <div className="text-[12px] font-semibold text-gap-navy mb-3">Fatura estimada do mês</div>
+      <div className="text-[12px] font-semibold text-gap-navy mb-3">Fatura estimada</div>
       <div className="relative flex flex-col gap-2">
         {/* marca do gasto tipico, pra faixa ter referencia */}
         <div
@@ -221,8 +221,11 @@ export default function MesCorrentePage() {
   return (
     <div className="p-5 max-w-[1180px] mx-auto">
       <PageHeader
-        title={`Mês corrente — ${monthLabel(v.month)}`}
-        subtitle={`Travado do dia 1. Última fatura importada: ${monthLabel(v.last_statement)} · parcelas projetadas a partir dela.`}
+        title={`Gastos de ${monthLabel(v.month)}`}
+        subtitle={
+          `O que você gasta agora cai na fatura de ${monthLabel(v.fatura_alvo)} — é dela que vêm as ` +
+          `parcelas e recorrentes abaixo. Última fatura importada: ${monthLabel(v.last_statement)}.`
+        }
       />
 
       <KpiGrid
@@ -243,7 +246,7 @@ export default function MesCorrentePage() {
         <div className="gap-card p-3.5">
           <div className="text-[12px] font-semibold text-gap-navy mb-2 flex items-center gap-1.5">
             <Lock size={13} className="text-gap-muted" />
-            Parcelas caindo em {monthLabel(v.month)}
+            Parcelas na fatura de {monthLabel(v.fatura_alvo)}
             <span className="ml-auto num text-gap-muted font-normal">{money(v.installments_cents)}</span>
           </div>
           <GapTable

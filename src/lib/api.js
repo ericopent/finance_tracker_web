@@ -2,7 +2,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   readFile, appendJsonl, rewriteJsonl, updateJson, putJson, parseJsonl, listDir, getToken,
 } from './github'
-import { monthView, cashflow, hydrate, merchantKey } from './engine'
+import { monthView, cashflow, hydrate, merchantKey, monthAdd } from './engine'
 import { todayISO } from './money'
 
 // caminhos dentro do repo PRIVADO de dados
@@ -74,7 +74,10 @@ export function useMonthView(date) {
 
 export function useCashflow(horizon = 12, openingCents = 0) {
   const q = useDataset()
-  const from = todayISO().slice(0, 7)
+  // Comeca na PROXIMA fatura, nao no mes corrente: a fatura deste mes vence dia
+  // 5, entao em qualquer dia depois disso ela ja saiu da conta e nao e mais
+  // dinheiro a sair. Projetar a partir dela contava um pagamento que ja ocorreu.
+  const from = monthAdd(todayISO().slice(0, 7), 1)
   let data
   let calcError = null
   if (q.data) {

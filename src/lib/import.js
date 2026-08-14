@@ -96,9 +96,12 @@ const MESES_PT = {
 
 // ---------------------------------------------------------------- valores e datas
 
-/** Aceita "1.234,56", "1234.56", "-45,90", "(45,90)" (negativo contabil). */
+/** Aceita "1.234,56", "1234.56", "-45,90", "(45,90)", "R$ 1,234.56", "-BRL 10,746.10". */
 export function parseValue(raw) {
-  let s = String(raw ?? '').trim().replace(/^R\$\s*/i, '').replace(/\s/g, '')
+  let s = String(raw ?? '').trim()
+    // o sinal pode vir ANTES da moeda ("-BRL 10,746.10") ou depois
+    .replace(/^([-+])?\s*(R\$|BRL|US\$|USD)\s*/i, '$1')
+    .replace(/\s/g, '')
   if (!s) return null
   let neg = false
   if (/^\(.*\)$/.test(s)) { neg = true; s = s.slice(1, -1) }
@@ -233,10 +236,56 @@ export function buildStatement({ grid, refMonth, config, fileName, sheetName }) 
 
   const txns = []
   const problemas = []
+
+  /*
+   * Compra internacional ocupa TRES linhas na fatura do Itau:
+   *
+   *   29/07/2026 | dólar de conversão     | R$ 5.43     <- cotacao, nao e gasto
+   *              | Openai                 | R$ 137.43   <- a cobranca de verdade
+   *              | United States          | $ 25.31     <- valor em dolar
+   *
+   * Somar as tres inflava a fatura em R$ 93,08 (8 cotacoes + uma linha de pais
+   * que vinha com valor em BRL). Regra: a cotacao carrega a DATA, a linha
+   * seguinte e a cobranca, e o que vier depois sem data e metadado.
+   */
+  let aguardandoCobranca = false
+  let dataDoGrupo = null
+
   rows.forEach((r, i) => {
     const desc = String(r[col.desc] ?? '').trim()
+
+    // A fatura ABERTA vem em secoes (nacionais / internacionais / encargos), cada
+    // uma com seu proprio cabecalho e sua linha de TOTAL. Sem filtrar, o
+    // "total dos lancamentos nacionais R$ 4.467,83" entra como se fosse compra e
+    // a fatura dobra. Linha de total tem valor e parece lancamento — nao da pra
+    // pegar so pelo formato, tem que ser pelo texto.
+    const d = norm(desc)
+    if (!d) return
+    if (/^total\b|^subtotal\b|^saldo\b/.test(d)) return          // somatorio de secao
+    if (/^lancamento$|^descricao$|^data$/.test(d)) return        // cabecalho repetido
+    if (/^lancamentos?\s|^encargos e servicos$/.test(d)) return  // titulo de secao
+    if (/^iof - transacao internacional$/.test(d)) return        // rotulo, valor 0
+
     const cents = parseValue(r[col.value])
-    const date = col.date >= 0 ? parseDate(r[col.date]) : null
+    // `dataPropria` = a linha traz data na coluna dela. Distinto de `date`, que
+    // a cobranca internacional HERDA da cotacao. Confundir os dois encerrava o
+    // grupo cedo demais e deixava "United Kingdom | BRL 49.90" entrar como gasto.
+    const dataPropria = col.date >= 0 ? parseDate(r[col.date]) : null
+    let date = dataPropria
+
+    // --- grupo de compra internacional ---
+    if (/^dolar de conversao$/.test(d)) {
+      aguardandoCobranca = true
+      dataDoGrupo = dataPropria     // a cotacao carrega a data do grupo
+      return                        // a cotacao em si nao e gasto
+    }
+    if (!dataPropria && aguardandoCobranca) {
+      date = dataDoGrupo            // a cobranca herda a data da cotacao
+      aguardandoCobranca = false
+    } else if (!dataPropria && dataDoGrupo) {
+      return                        // "United States", "valor em dólar": metadado
+    }
+    if (dataPropria) dataDoGrupo = null  // so linha com data PROPRIA encerra o grupo
 
     if (!desc || cents === null) {
       // So reclama de linha que PARECE lancamento (tem data ou valor). O rodape
@@ -267,7 +316,43 @@ export function buildStatement({ grid, refMonth, config, fileName, sheetName }) 
     })
   })
 
-  return { ref, txns, problemas, fileName: fileName ?? null }
+  const meta = lerCabecalho(grid ?? [])
+  return { ref, txns, problemas, fileName: fileName ?? null, ...meta }
+}
+
+/**
+ * Le o preambulo da fatura: se esta aberta ou fechada, e o total que o proprio
+ * banco imprime.
+ *
+ * O total serve de conferencia automatica — se a soma dos lancamentos nao bate
+ * com o que o Itau diz, o parser errou e e melhor avisar do que gravar torto.
+ * Fatura ABERTA importa porque ela e parcial por natureza: o ciclo ainda esta
+ * correndo e o valor so cresce.
+ */
+function lerCabecalho(grid) {
+  let aberta = null
+  let totalImpresso = null
+  let vencimento = null
+
+  for (const row of grid.slice(0, 30)) {
+    const linha = row.map((c) => String(c ?? '')).join(' ')
+    const n = norm(linha)
+    if (aberta === null && /\bfatura\b/.test(n)) {
+      if (/\baberta\b|valor ate o momento/.test(n)) aberta = true
+      else if (/\bfechada\b|fatura paga/.test(n)) aberta = false
+    }
+    if (totalImpresso === null && /valor ate o momento|voce pagou|^\s*aberta\b|\bfechada\b/.test(n)) {
+      for (const c of row) {
+        const v = parseValue(c)
+        if (v !== null && Math.abs(v) > 1000) { totalImpresso = Math.abs(v); break }
+      }
+    }
+    if (!vencimento) {
+      const m = linha.match(/(\d{2}\/\d{2}\/\d{4})/)
+      if (m && /venc/.test(n)) vencimento = parseDate(m[1])
+    }
+  }
+  return { aberta: aberta ?? false, totalImpresso, vencimento }
 }
 
 function monthShift(m, k) {

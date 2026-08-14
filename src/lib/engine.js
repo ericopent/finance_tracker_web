@@ -307,7 +307,19 @@ export function monthView(ds, todayISO) {
   const day = Number(todayISO.slice(8, 10))
   const dim = daysInMonth(Number(todayISO.slice(0, 4)), Number(todayISO.slice(5, 7)))
 
-  const installments = installmentsDue(txns, last, month)
+  /*
+   * A fatura que voce esta enchendo AGORA nao e a do mes corrente.
+   *
+   * Ciclo do cartao: compra de julho -> fatura "Agosto" (vence 05/08). Entao em
+   * 14/08 a fatura de agosto ja fechou E ja venceu; o que voce gasta hoje cai na
+   * de SETEMBRO. Usar o mes-calendario aqui mostrava as parcelas de uma fatura
+   * ja paga — dinheiro que ja saiu, apresentado como compromisso futuro.
+   *
+   * Derivar de `month + 1` e nao de `last_statement + 1` de proposito: o alvo
+   * depende de que dia e hoje, nao de qual fatura voce lembrou de importar.
+   */
+  const fatura_alvo = monthAdd(month, 1)
+  const installments = installmentsDue(txns, last, fatura_alvo)
   const installments_cents = installments.reduce((a, i) => a + i.cents, 0)
 
   const detected = detectSubscriptions(txns, last)
@@ -324,12 +336,59 @@ export function monthView(ds, todayISO) {
   const sorted = [...hist].sort((a, b) => a - b)
   const baseline_cents = Math.round(pct(sorted, 0.5))
 
-  const curve = dayCurve(txns, exclude, month)
-  const elapsed_share = Math.min(1, Math.max(0, curve[Math.min(day, 31)]))
-  const left = Math.max(0, 1 - elapsed_share)
+  /*
+   * Se a fatura em formacao ja foi importada (o Itau exporta a fatura ABERTA),
+   * o gasto ate agora nao precisa ser estimado: esta ali, linha a linha. E uma
+   * base muito melhor que projecao — e melhor ainda que lancamento manual, que
+   * depende de disciplina.
+   */
+  const naFaturaAberta = txns.filter((t) => t.cash === fatura_alvo && t.source === 'import')
+  const temFaturaAberta = naFaturaAberta.length > 0
+
+  // Parte VARIAVEL do que ja caiu: fora parcela e fora recorrente, que ja estao
+  // contadas nos blocos travados.
+  //
+  // Inclui os recorrentes DECLARADOS, nao so os detectados: um item confirmado
+  // na mao (CLAUDE.AI) que ja postou na fatura aberta seria somado duas vezes —
+  // no bloco travado e aqui.
+  const exSet = new Set([
+    ...exclude,
+    ...declaredRecurring(config, 'outflow').map((r) => r.key).filter(Boolean),
+  ])
+  const realizado_cents = naFaturaAberta
+    .filter((t) => t.igrp == null && !exSet.has(t.mkey))
+    .reduce((a, t) => a + outflow(t.kind, t.cents), 0)
 
   const loggedTxns = txns.filter((t) => t.source === 'manual' && t.date.slice(0, 7) === month)
-  const logged_cents = loggedTxns.reduce((a, t) => a + outflow(t.kind, t.cents), 0)
+  const manual_cents = loggedTxns.reduce((a, t) => a + outflow(t.kind, t.cents), 0)
+  const logged_cents = realizado_cents + manual_cents
+
+  /*
+   * Quanto do ciclo ja passou.
+   *
+   * Com fatura aberta, mede-se pelo proprio ciclo dela (primeira compra -> +1
+   * mes), nao pelo dia do mes-calendario: o ciclo do cartao vai do dia 30 ao 29,
+   * entao "dia 14 do mes" e ~50% do ciclo, nao 45% dele.
+   */
+  let elapsed_share = null
+  if (temFaturaAberta) {
+    // SEM parcelado: a linha parcelada carrega a data ORIGINAL da compra, entao
+    // usar o minimo de todas dava "ciclo comecou em out/2025" e 100% decorrido.
+    const datas = naFaturaAberta.filter((t) => t.igrp == null).map((t) => t.date).sort()
+    const inicio = datas[0]
+    if (inicio) {
+      const dias = Math.round(
+        (Date.parse(`${todayISO}T00:00:00`) - Date.parse(`${inicio}T00:00:00`)) / 86400000
+      )
+      // fora de 0-45 dias o ciclo nao faz sentido; cai no metodo antigo
+      if (dias >= 0 && dias <= 45) elapsed_share = Math.min(1, dias / 30)
+    }
+  }
+  if (elapsed_share === null) {
+    const curve = dayCurve(txns, exclude, month)
+    elapsed_share = Math.min(1, Math.max(0, curve[Math.min(day, 31)]))
+  }
+  const left = Math.max(0, 1 - elapsed_share)
 
   const band = (p) => Math.round(pct(sorted, p) * left)
   const remaining = { p10: band(0.10), p50: band(0.50), p90: band(0.90) }
@@ -351,8 +410,9 @@ export function monthView(ds, todayISO) {
     month, day, days_in_month: dim, elapsed_share,
     installments, subscriptions, installments_cents, subscriptions_cents,
     logged_cents, logged_count: loggedTxns.length, logged: loggedTxns,
+    realizado_cents, manual_cents, tem_fatura_aberta: temFaturaAberta,
     remaining, total, income_cents, fixed_outflow_cents, net,
-    baseline_cents, last_statement: last,
+    baseline_cents, last_statement: last, fatura_alvo,
     candidates: detectCandidates(txns, last, config),
   }
 }
