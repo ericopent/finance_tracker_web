@@ -1,0 +1,60 @@
+name: Deploy no GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# um deploy por vez; push novo cancela build em andamento
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - name: Build
+        run: npm run build
+        env:
+          # Pages de repo de projeto serve em /<repo>/, nao na raiz.
+          # Sem esse base os assets dao 404 e a pagina abre em branco.
+          BASE_PATH: /${{ github.event.repository.name }}/
+
+      - name: Garantir que nenhum dado pessoal foi pro bundle
+        # rede de seguranca: este repo e PUBLICO. Se algum dia alguem commitar
+        # um ledger.json aqui por engano, o deploy quebra em vez de publicar.
+        run: |
+          if find dist -name '*.json' | xargs -r grep -lE '"(txns|cents|merchant_key)"' | grep -q .; then
+            echo "::error::dado financeiro encontrado no dist — deploy abortado"
+            exit 1
+          fi
+          echo "ok: bundle so tem codigo"
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4

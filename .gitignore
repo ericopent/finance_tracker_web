@@ -1,0 +1,17 @@
+node_modules/
+dist/
+.DS_Store
+*.log
+.env
+.env.*
+
+# Este repo e PUBLICO e contem SO CODIGO.
+# Nenhum dado financeiro entra aqui — o dado mora no repo privado e e lido
+# em runtime pela API do GitHub, autenticado com o token do aparelho.
+data/
+*.db
+*.csv
+*.xlsx
+ledger.json
+manual.jsonl
+config.json
