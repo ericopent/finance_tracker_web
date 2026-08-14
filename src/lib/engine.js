@@ -327,8 +327,18 @@ export function monthView(ds, todayISO) {
   // sem isso a assinatura conta duas vezes: travada aqui e diluida na projecao
   const exclude = detected.map((s) => s.key)
 
+  /*
+   * Recorrente confirmado na mao se divide em dois, e o sinal que separa e ter
+   * `key` (merchant_key): quem foi confirmado a partir de um lojista do CARTAO
+   * carrega a chave dele; quem foi cadastrado a mao (Marina, seguro, surf) nao
+   * tem. Sem essa divisao, CLAUDE.AI (que passa no cartao) ficava do lado de
+   * fora e a fatura estimada saia R$ 582 menor do que sera.
+   */
   const fixed = declaredRecurring(config, 'outflow')
-  const fixed_outflow_cents = fixed.reduce((a, s) => a + s.cents, 0)
+  const fixedNoCartao = fixed.filter((s) => s.key)
+  const fixedForaDoCartao = fixed.filter((s) => !s.key)
+  const fixed_card_cents = fixedNoCartao.reduce((a, s) => a + s.cents, 0)
+  const fixed_outflow_cents = fixedForaDoCartao.reduce((a, s) => a + s.cents, 0)
   const income_cents = declaredRecurring(config, 'inflow').reduce((a, s) => a + s.cents, 0)
   const subscriptions = [...detected, ...fixed]
 
@@ -393,11 +403,26 @@ export function monthView(ds, todayISO) {
   const band = (p) => Math.round(pct(sorted, p) * left)
   const remaining = { p10: band(0.10), p50: band(0.50), p90: band(0.90) }
 
-  const locked = installments_cents + subscriptions_cents + fixed_outflow_cents
+  /*
+   * Duas totalizacoes diferentes, e misturar as duas engana:
+   *
+   *   fatura = o que vai chegar do CARTAO (parcelas + assinaturas + variavel)
+   *   total  = custo do mes = fatura + fixos que NAO passam no cartao
+   *            (Marina, seguro do carro, surf)
+   *
+   * Somar os fixos de fora dentro de algo chamado "fatura estimada" inchava o
+   * numero em R$ 1.590 e fazia a fatura parecer maior do que sera.
+   */
+  const noCartao = installments_cents + subscriptions_cents + fixed_card_cents
+  const fatura = {
+    p10: noCartao + logged_cents + remaining.p10,
+    p50: noCartao + logged_cents + remaining.p50,
+    p90: noCartao + logged_cents + remaining.p90,
+  }
   const total = {
-    p10: locked + logged_cents + remaining.p10,
-    p50: locked + logged_cents + remaining.p50,
-    p90: locked + logged_cents + remaining.p90,
+    p10: fatura.p10 + fixed_outflow_cents,
+    p50: fatura.p50 + fixed_outflow_cents,
+    p90: fatura.p90 + fixed_outflow_cents,
   }
   // p90 de GASTO e o pior caso de SOBRA: os extremos invertem
   const net = {
@@ -411,7 +436,7 @@ export function monthView(ds, todayISO) {
     installments, subscriptions, installments_cents, subscriptions_cents,
     logged_cents, logged_count: loggedTxns.length, logged: loggedTxns,
     realizado_cents, manual_cents, tem_fatura_aberta: temFaturaAberta,
-    remaining, total, income_cents, fixed_outflow_cents, net,
+    remaining, fatura, total, income_cents, fixed_outflow_cents, fixed_card_cents, net,
     baseline_cents, last_statement: last, fatura_alvo,
     candidates: detectCandidates(txns, last, config),
   }

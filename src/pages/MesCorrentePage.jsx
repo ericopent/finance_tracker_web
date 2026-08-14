@@ -14,9 +14,11 @@ import { GAP, money, moneyShort, moneySigned, monthLabel, brNum } from '../theme
 function Composicao({ v }) {
   const partes = [
     { label: 'Parcelas', cents: v.installments_cents, cor: GAP.navy, icon: Lock },
-    { label: 'Recorrente', cents: v.subscriptions_cents + v.fixed_outflow_cents, cor: GAP.blue, icon: Repeat },
+    { label: 'Assinaturas', cents: v.subscriptions_cents + v.fixed_card_cents, cor: GAP.blue, icon: Repeat },
     { label: 'Lançado', cents: v.logged_cents, cor: '#8b5cf6', icon: PencilLine },
     { label: 'Projetado', cents: v.remaining.p50, cor: '#cbd5e1', icon: TrendingUp },
+    // fora do cartao: nao entra na fatura, mas sai do mesmo bolso
+    { label: 'Fixos (fora)', cents: v.fixed_outflow_cents, cor: '#94a3b8', icon: Repeat },
   ]
   const total = Math.max(1, partes.reduce((a, p) => a + p.cents, 0))
   return (
@@ -56,11 +58,11 @@ function Composicao({ v }) {
  * serie temporal de verdade e o download se paga.
  */
 function Faixa({ v }) {
-  const base = v.baseline_cents + v.installments_cents + v.subscriptions_cents + v.fixed_outflow_cents
+  const base = v.baseline_cents + v.installments_cents + v.subscriptions_cents + v.fixed_card_cents
   const pts = [
-    { l: 'Otimista', tag: 'p10', c: v.total.p10, cor: GAP.green },
-    { l: 'Central', tag: 'p50', c: v.total.p50, cor: GAP.blue },
-    { l: 'Pessimista', tag: 'p90', c: v.total.p90, cor: GAP.red },
+    { l: 'Otimista', tag: 'p10', c: v.fatura.p10, cor: GAP.green },
+    { l: 'Central', tag: 'p50', c: v.fatura.p50, cor: GAP.blue },
+    { l: 'Pessimista', tag: 'p90', c: v.fatura.p90, cor: GAP.red },
   ]
   const max = Math.max(...pts.map((p) => p.c), base) * 1.08 || 1
   return (
@@ -93,7 +95,7 @@ function Faixa({ v }) {
       </div>
       <div className="text-[10.5px] text-gap-muted mt-2.5">
         Faixa de 80%: em 8 de cada 10 meses parecidos, o total cai entre{' '}
-        <b>{moneyShort(v.total.p10)}</b> e <b>{moneyShort(v.total.p90)}</b>.
+        <b>{moneyShort(v.fatura.p10)}</b> e <b>{moneyShort(v.fatura.p90)}</b>. Fora do cartão, mais {money(v.fixed_outflow_cents)} de fixos.
       </div>
     </div>
   )
@@ -216,25 +218,34 @@ export default function MesCorrentePage() {
   }
 
   const manuais = v.logged
-  const travado = v.installments_cents + v.subscriptions_cents + v.fixed_outflow_cents
+  const travado = v.installments_cents + v.subscriptions_cents + v.fixed_card_cents + v.fixed_outflow_cents
 
   return (
     <div className="p-5 max-w-[1180px] mx-auto">
       <PageHeader
-        title={`Gastos de ${monthLabel(v.month)}`}
+        title={`Fatura de ${monthLabel(v.fatura_alvo)}${v.tem_fatura_aberta ? ' · em aberto' : ''}`}
         subtitle={
-          `O que você gasta agora cai na fatura de ${monthLabel(v.fatura_alvo)} — é dela que vêm as ` +
-          `parcelas e recorrentes abaixo. Última fatura importada: ${monthLabel(v.last_statement)}.`
+          v.tem_fatura_aberta
+            ? `Vence dia 5. Fecha com o que você gastar até o fim de ${monthLabel(v.month)} — ` +
+              `${brNum(v.elapsed_share * 100, 0)}% do ciclo já passou.`
+            : `Fatura em formação com os gastos de ${monthLabel(v.month)}. ` +
+              `Importe a fatura aberta para ver o valor real em vez de estimativa.`
         }
       />
 
       <KpiGrid
         items={[
           { label: 'Já travado', value: money(travado), sub: 'parcelas + recorrentes', tone: 'pos' },
-          { label: 'Lançado por você', value: money(v.logged_cents), sub: `${v.logged_count} lançamento${v.logged_count === 1 ? '' : 's'}` },
-          { label: 'Falta gastar (p50)', value: money(v.remaining.p50), sub: `${money(v.remaining.p10)} – ${money(v.remaining.p90)}` },
-          { label: 'Total do mês', value: money(v.total.p50), sub: `faixa 80%: ${moneyShort(v.total.p10)} – ${moneyShort(v.total.p90)}`, tone: 'pos' },
-          { label: 'Sobra estimada', value: moneySigned(v.net.p50), sub: `renda ${moneyShort(v.income_cents)}`, tone: v.net.p50 >= 0 ? 'neg' : 'pos' },
+          {
+            label: v.tem_fatura_aberta ? 'Variável já gasto' : 'Lançado por você',
+            value: money(v.logged_cents),
+            sub: v.tem_fatura_aberta
+              ? (v.manual_cents ? `da fatura + ${money(v.manual_cents)} lançado` : 'já na fatura aberta')
+              : `${v.logged_count} lançamento${v.logged_count === 1 ? '' : 's'}`,
+          },
+          { label: 'Falta gastar (p50)', value: money(v.remaining.p50), sub: `${moneyShort(v.remaining.p10)} – ${moneyShort(v.remaining.p90)}` },
+          { label: 'Fatura estimada', value: money(v.fatura.p50), sub: `faixa 80%: ${moneyShort(v.fatura.p10)} – ${moneyShort(v.fatura.p90)}`, tone: 'pos' },
+          { label: 'Sobra estimada', value: moneySigned(v.net.p50), sub: `renda ${moneyShort(v.income_cents)} − fatura − ${moneyShort(v.fixed_outflow_cents)} fixos`, tone: v.net.p50 >= 0 ? 'neg' : 'pos' },
         ]}
       />
 
@@ -267,7 +278,7 @@ export default function MesCorrentePage() {
             <Repeat size={13} className="text-gap-muted" />
             Recorrentes
             <span className="ml-auto num text-gap-muted font-normal">
-              {money(v.subscriptions_cents + v.fixed_outflow_cents)}
+              {money(v.subscriptions_cents + v.fixed_card_cents + v.fixed_outflow_cents)}
             </span>
           </div>
           <GapTable
