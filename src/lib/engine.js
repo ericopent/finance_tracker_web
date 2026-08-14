@@ -342,7 +342,15 @@ export function monthView(ds, todayISO) {
   const income_cents = declaredRecurring(config, 'inflow').reduce((a, s) => a + s.cents, 0)
   const subscriptions = [...detected, ...fixed]
 
-  const hist = discretionaryHistory(txns, exclude, month)
+  /*
+   * Tudo que ja e contado num bloco travado sai do variavel: detectados E
+   * confirmados na mao. Sem os confirmados, CLAUDE.AI & cia entram no travado E
+   * na distribuicao do variavel — contados duas vezes.
+   */
+  const exSet = new Set([...exclude, ...fixedNoCartao.map((r) => r.key).filter(Boolean)])
+  const excludeTudo = [...exSet]
+
+  const hist = discretionaryHistory(txns, excludeTudo, month)
   const sorted = [...hist].sort((a, b) => a - b)
   const baseline_cents = Math.round(pct(sorted, 0.5))
 
@@ -355,16 +363,6 @@ export function monthView(ds, todayISO) {
   const naFaturaAberta = txns.filter((t) => t.cash === fatura_alvo && t.source === 'import')
   const temFaturaAberta = naFaturaAberta.length > 0
 
-  // Parte VARIAVEL do que ja caiu: fora parcela e fora recorrente, que ja estao
-  // contadas nos blocos travados.
-  //
-  // Inclui os recorrentes DECLARADOS, nao so os detectados: um item confirmado
-  // na mao (CLAUDE.AI) que ja postou na fatura aberta seria somado duas vezes —
-  // no bloco travado e aqui.
-  const exSet = new Set([
-    ...exclude,
-    ...declaredRecurring(config, 'outflow').map((r) => r.key).filter(Boolean),
-  ])
   const realizado_cents = naFaturaAberta
     .filter((t) => t.igrp == null && !exSet.has(t.mkey))
     .reduce((a, t) => a + outflow(t.kind, t.cents), 0)
@@ -395,7 +393,7 @@ export function monthView(ds, todayISO) {
     }
   }
   if (elapsed_share === null) {
-    const curve = dayCurve(txns, exclude, month)
+    const curve = dayCurve(txns, excludeTudo, month)
     elapsed_share = Math.min(1, Math.max(0, curve[Math.min(day, 31)]))
   }
   const left = Math.max(0, 1 - elapsed_share)
@@ -413,11 +411,38 @@ export function monthView(ds, todayISO) {
    * Somar os fixos de fora dentro de algo chamado "fatura estimada" inchava o
    * numero em R$ 1.590 e fazia a fatura parecer maior do que sera.
    */
-  const noCartao = installments_cents + subscriptions_cents + fixed_card_cents
+  /*
+   * A fatura se monta em TRES pedacos, e so o ultimo e chute:
+   *
+   *   ja_na_fatura   fato. Com a fatura aberta importada, e o proprio numero do
+   *                  Itau — da pra conferir na tela do banco.
+   *   a_entrar       recorrente que ainda nao postou neste ciclo. Quase certo.
+   *   remaining      variavel do resto do ciclo. Este sim e previsao.
+   *
+   * Antes eu somava parcelas + assinaturas + realizado + projecao, o que
+   * contava assinatura JA postada pelo valor mediano em vez do valor real e
+   * nao batia com o extrato. Ancorar no numero do banco torna a conta
+   * conferivel.
+   */
+  const recorrentesCartao = [...detected, ...fixedNoCartao]
+  let ja_na_fatura_cents
+  let a_entrar_cents
+  if (temFaturaAberta) {
+    ja_na_fatura_cents = naFaturaAberta.reduce((a, t) => a + outflow(t.kind, t.cents), 0) + manual_cents
+    const jaPostou = new Set(naFaturaAberta.map((t) => t.mkey))
+    a_entrar_cents = recorrentesCartao
+      .filter((s) => s.key && !jaPostou.has(s.key))
+      .reduce((a, s) => a + s.cents, 0)
+  } else {
+    // sem fatura aberta, tudo e projecao: parcelas + recorrentes + o que voce lancou
+    ja_na_fatura_cents = installments_cents + manual_cents
+    a_entrar_cents = subscriptions_cents + fixed_card_cents
+  }
+
   const fatura = {
-    p10: noCartao + logged_cents + remaining.p10,
-    p50: noCartao + logged_cents + remaining.p50,
-    p90: noCartao + logged_cents + remaining.p90,
+    p10: ja_na_fatura_cents + a_entrar_cents + remaining.p10,
+    p50: ja_na_fatura_cents + a_entrar_cents + remaining.p50,
+    p90: ja_na_fatura_cents + a_entrar_cents + remaining.p90,
   }
   const total = {
     p10: fatura.p10 + fixed_outflow_cents,
@@ -437,8 +462,23 @@ export function monthView(ds, todayISO) {
     logged_cents, logged_count: loggedTxns.length, logged: loggedTxns,
     realizado_cents, manual_cents, tem_fatura_aberta: temFaturaAberta,
     remaining, fatura, total, income_cents, fixed_outflow_cents, fixed_card_cents, net,
+    ja_na_fatura_cents, a_entrar_cents,
     baseline_cents, last_statement: last, fatura_alvo,
     candidates: detectCandidates(txns, last, config),
+    /*
+     * Recorrente confirmado que NAO aparece mais nas ultimas faturas.
+     *
+     * Acontece quando o lojista muda de nome no extrato: "CLAUDE.AI
+     * SUBSCRIPTION" virou "Anthropic* Claude Sub" na exportacao nova. O antigo
+     * vira custo fantasma travado e o novo entra no variavel — o mesmo gasto
+     * contado duas vezes, e por isso o mes parece maior do que e.
+     */
+    sumidos: (() => {
+      if (!last) return []
+      const janela = new Set([last, monthAdd(last, -1), monthAdd(last, -2)])
+      const vistos = new Set(txns.filter((t) => janela.has(t.cash)).map((t) => t.mkey))
+      return fixedNoCartao.filter((s) => s.key && !vistos.has(s.key))
+    })(),
   }
 }
 

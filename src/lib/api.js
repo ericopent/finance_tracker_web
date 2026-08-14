@@ -192,6 +192,15 @@ export function useConfirmRecurring() {
   )
 }
 
+/** Remove de vez um recorrente (usado quando o lojista mudou de nome). */
+export function useRemoveRecurring() {
+  return useDatasetMutation((key) =>
+    saveConfig((cfg) => {
+      cfg.recurring = cfg.recurring.filter((r) => r.key !== key)
+    }, `remove recorrente ${key}`)
+  )
+}
+
 export function useDismissRecurring() {
   return useDatasetMutation((key) =>
     saveConfig((cfg) => {

@@ -1,12 +1,12 @@
 import { useState } from 'react'
 import clsx from 'clsx'
-import { Trash2, Lock, Repeat, PencilLine, TrendingUp, Check, X, HelpCircle, Loader2 } from 'lucide-react'
+import { Trash2, Lock, Repeat, PencilLine, TrendingUp, Check, X, HelpCircle, Loader2, AlertTriangle } from 'lucide-react'
 import PageHeader from '../components/PageHeader'
 import KpiGrid from '../components/KpiGrid'
 import GapTable from '../components/GapTable'
 import QuickEntry from '../components/QuickEntry'
 
-import { useMonthView, useDeleteTxn, useConfirmRecurring, useDismissRecurring } from '../lib/api'
+import { useMonthView, useDeleteTxn, useConfirmRecurring, useDismissRecurring, useRemoveRecurring } from '../lib/api'
 import { clearAuth } from '../lib/github'
 import { GAP, money, moneyShort, moneySigned, monthLabel, brNum } from '../theme/gap'
 
@@ -184,6 +184,51 @@ function Candidatos({ itens }) {
   )
 }
 
+/**
+ * Recorrente confirmado que sumiu do extrato.
+ *
+ * Quase sempre o lojista mudou de nome ("CLAUDE.AI SUBSCRIPTION" ->
+ * "Anthropic* Claude Sub"): o antigo vira custo fantasma travado e o novo
+ * aparece como candidato. O mesmo gasto contado duas vezes.
+ */
+function Sumidos({ itens }) {
+  const rm = useRemoveRecurring()
+  const [busy, setBusy] = useState(null)
+  if (!itens?.length) return null
+  const total = itens.reduce((a, s) => a + s.cents, 0)
+  return (
+    <div className="gap-card p-3.5 border-l-4 border-l-gap-red">
+      <div className="text-[12px] font-semibold text-gap-navy mb-1 flex items-center gap-1.5">
+        <AlertTriangle size={13} className="text-gap-red" />
+        Cobrando {money(total)} que não aparece mais
+      </div>
+      <div className="text-[11px] text-gap-muted mb-2.5">
+        Confirmado como recorrente, mas ausente das últimas 3 faturas — normalmente
+        o lojista mudou de nome. Enquanto ficar aqui, conta em dobro: fantasma no
+        travado e real no variável. Remova e confirme o nome novo na lista acima.
+      </div>
+      <div className="flex flex-col gap-1.5">
+        {itens.map((s) => (
+          <div key={s.key} className="flex items-center gap-2 text-[12.5px] border border-gap-border rounded-md px-2.5 py-1.5">
+            <span className="truncate flex-1" title={s.label}>{s.label}</span>
+            <span className="num font-semibold whitespace-nowrap">{money(s.cents)}</span>
+            <button
+              className="text-gap-red hover:bg-gap-red/10 rounded p-2 -m-0.5 transition-colors disabled:opacity-40"
+              disabled={busy === s.key} aria-label={`remover ${s.label}`}
+              onClick={async () => { setBusy(s.key); try { await rm.mutateAsync(s.key) } catch {} finally { setBusy(null) } }}
+            >
+              {busy === s.key ? <Loader2 size={15} className="animate-spin" /> : <Trash2 size={15} />}
+            </button>
+          </div>
+        ))}
+      </div>
+      {rm.error && (
+        <div className="mt-2 text-[12px] text-gap-red whitespace-pre-line">{String(rm.error.message ?? rm.error)}</div>
+      )}
+    </div>
+  )
+}
+
 export default function MesCorrentePage() {
   const { data: v, isLoading, error } = useMonthView()
   const del = useDeleteTxn()
@@ -237,13 +282,13 @@ export default function MesCorrentePage() {
         items={[
           { label: 'Já travado', value: money(travado), sub: 'parcelas + recorrentes', tone: 'pos' },
           {
-            label: v.tem_fatura_aberta ? 'Variável já gasto' : 'Lançado por você',
-            value: money(v.logged_cents),
+            label: v.tem_fatura_aberta ? 'Já na fatura' : 'Lançado por você',
+            value: money(v.ja_na_fatura_cents),
             sub: v.tem_fatura_aberta
               ? (v.manual_cents ? `da fatura + ${money(v.manual_cents)} lançado` : 'já na fatura aberta')
               : `${v.logged_count} lançamento${v.logged_count === 1 ? '' : 's'}`,
           },
-          { label: 'Falta gastar (p50)', value: money(v.remaining.p50), sub: `${moneyShort(v.remaining.p10)} – ${moneyShort(v.remaining.p90)}` },
+          { label: 'Ainda deve entrar', value: money(v.a_entrar_cents + v.remaining.p50), sub: `previsão · ${moneyShort(v.remaining.p10 + v.a_entrar_cents)} – ${moneyShort(v.remaining.p90 + v.a_entrar_cents)}` },
           { label: 'Fatura estimada', value: money(v.fatura.p50), sub: `faixa 80%: ${moneyShort(v.fatura.p10)} – ${moneyShort(v.fatura.p90)}`, tone: 'pos' },
           { label: 'Sobra estimada', value: moneySigned(v.net.p50), sub: `renda ${moneyShort(v.income_cents)} − fatura − ${moneyShort(v.fixed_outflow_cents)} fixos`, tone: v.net.p50 >= 0 ? 'neg' : 'pos' },
         ]}
@@ -251,6 +296,7 @@ export default function MesCorrentePage() {
 
       <div className="mt-4"><QuickEntry /></div>
       <div className="mt-3"><Composicao v={v} /></div>
+      {v.sumidos?.length > 0 && <div className="mt-3"><Sumidos itens={v.sumidos} /></div>}
       {v.candidates?.length > 0 && <div className="mt-3"><Candidatos itens={v.candidates} /></div>}
 
       <div className="grid lg:grid-cols-2 gap-4 mt-4">
