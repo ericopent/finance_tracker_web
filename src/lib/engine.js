@@ -122,6 +122,9 @@ export function hydrate(ledger, manual = []) {
 export function merchantKey(desc) {
   return String(desc ?? '')
     .normalize('NFKD')
+    // marcas de acento soltas pelo NFKD. Escapado de proposito: com os
+    // caracteres combinantes crus, qualquer ferramenta que reencode o arquivo
+    // corrompe a classe em silencio.
     .replace(/[̀-ͯ]/g, '')
     .toUpperCase()
     .replace(/\s*\d{2}\/\d{2}\s*$/, '')

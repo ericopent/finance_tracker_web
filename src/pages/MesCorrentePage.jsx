@@ -5,6 +5,7 @@ import GapTable from '../components/GapTable'
 import QuickEntry from '../components/QuickEntry'
 
 import { useMonthView, useDeleteTxn, useConfirmRecurring, useDismissRecurring } from '../lib/api'
+import { clearAuth } from '../lib/github'
 import { GAP, money, moneyShort, moneySigned, monthLabel, brNum } from '../theme/gap'
 
 /** Barra de composicao do mes: travado -> lancado -> projetado. */
@@ -146,9 +147,34 @@ export default function MesCorrentePage() {
   const { data: v, isLoading, error } = useMonthView()
   const del = useDeleteTxn()
 
-  if (isLoading) return <div className="p-6 text-gap-muted text-sm">carregando do GitHub…</div>
-  if (error) return <div className="p-6 text-gap-red text-sm">erro: {String(error.message ?? error)}</div>
-  if (!v) return null
+  // erro primeiro; depois QUALQUER ausencia de dado vira "carregando".
+  // O `return null` que estava aqui era exatamente a tela branca: query
+  // desabilitada nao e isLoading nem error, e a pagina renderizava nada.
+  if (error) {
+    return (
+      <div className="p-5">
+        <div className="gap-card p-4 max-w-[560px]">
+          <div className="text-[14px] font-bold text-gap-red mb-1">Não consegui carregar</div>
+          <div className="text-[12.5px] whitespace-pre-line leading-relaxed">
+            {String(error.message ?? error)}
+          </div>
+          <div className="flex gap-2 mt-3">
+            <button className="gap-btn" onClick={() => location.reload()}>Tentar de novo</button>
+            <button className="gap-btn !bg-gap-muted" onClick={() => { clearAuth(); location.reload() }}>
+              Trocar token
+            </button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+  if (!v) {
+    return (
+      <div className="p-6 text-gap-muted text-sm">
+        {isLoading ? 'carregando do GitHub…' : 'preparando…'}
+      </div>
+    )
+  }
 
   const manuais = v.logged
   const travado = v.installments_cents + v.subscriptions_cents + v.fixed_outflow_cents

@@ -35,14 +35,27 @@ export function useDataset() {
   })
 }
 
-/** Visao do mes — calculada no cliente a partir do dataset. */
+/**
+ * Visao do mes — calculada no cliente a partir do dataset.
+ *
+ * O calculo roda DURANTE o render, entao uma excecao aqui derrubaria a arvore
+ * inteira. Capturando e devolvendo como `error`, o problema aparece na tela em
+ * vez de virar tela branca.
+ */
 export function useMonthView(date) {
   const q = useDataset()
   const today = date ?? todayISO()
-  return {
-    ...q,
-    data: q.data ? monthView(q.data.ledger, q.data.config, q.data.manual, today) : undefined,
+  let data
+  let calcError = null
+  if (q.data) {
+    try {
+      data = monthView(q.data.ledger, q.data.config, q.data.manual, today)
+    } catch (e) {
+      calcError = e instanceof Error ? e : new Error(String(e))
+      calcError.message = `falha ao calcular o mês: ${calcError.message}`
+    }
   }
+  return { ...q, data, error: q.error ?? calcError }
 }
 
 export function useCashflow(horizon = 12, openingCents = 0) {

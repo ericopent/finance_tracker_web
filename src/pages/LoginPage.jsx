@@ -63,7 +63,11 @@ export default function LoginPage({ onOk }) {
           Repository permissions → <b>Contents: Read and write</b>. Nada além disso.
         </div>
 
-        {erro && <div className="mt-3 text-[12px] text-gap-red font-semibold">{erro}</div>}
+        {erro && (
+          <div className="mt-3 text-[12px] text-gap-red border border-gap-red/30 bg-gap-red/5 rounded-md px-2.5 py-2 whitespace-pre-line leading-relaxed">
+            {erro}
+          </div>
+        )}
 
         <button className="gap-btn w-full mt-4" disabled={busy || !token.trim()}>
           {busy ? 'verificando…' : 'Entrar'}

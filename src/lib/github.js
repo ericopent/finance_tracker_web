@@ -61,10 +61,14 @@ async function gh(path, opts = {}) {
       ...opts.headers,
     },
   })
-  if (res.status === 401) throw new Error('token inválido ou expirado')
-  if (res.status === 403) throw new Error('token sem permissão de Contents nesse repo')
+  if (res.status === 401) throw new Error('Token inválido ou expirado. Gere outro no github.com.')
+  if (res.status === 403) {
+    throw new Error('Token sem permissão de Contents (Read and write) nesse repositório.')
+  }
   if (res.status === 404) {
-    const e = new Error('não encontrado')
+    // Pode ser arquivo inexistente (esperado em manual.jsonl no 1o uso) ou
+    // token sem acesso ao repo. Quem chama decide — readFile trata como null.
+    const e = new Error(`Não encontrado: ${path.split('?')[0]}`)
     e.code = 404
     throw e
   }
@@ -77,13 +81,52 @@ async function gh(path, opts = {}) {
   return res.status === 204 ? null : res.json()
 }
 
-/** Confere se o token enxerga o repo. Usado na tela de login. */
-export async function checkAuth(token, repo) {
+/** Aceita "owner/repo", URL colada do navegador, com ou sem .git. */
+export function normalizeRepo(input) {
+  return String(input ?? '')
+    .trim()
+    .replace(/^https?:\/\/(www\.)?github\.com\//i, '')
+    .replace(/\.git$/i, '')
+    .replace(/^\/+|\/+$/g, '')
+}
+
+/**
+ * Confere o token em DOIS passos, porque 404 sozinho nao diz nada.
+ *
+ * A API devolve 404 (nao 403) quando o token e valido mas nao alcanca o repo —
+ * negar a existencia evita revelar repo privado pra quem nao deveria saber.
+ * Efeito colateral: "nao encontrado" vira a mensagem mais inutil possivel.
+ * Perguntando /user antes, da pra separar "token ruim" de "token bom sem acesso"
+ * e dizer exatamente qual campo do GitHub esta errado.
+ */
+export async function checkAuth(token, repoInput) {
+  const repo = normalizeRepo(repoInput)
   const prev = { t: getToken(), r: getRepo() }
   setAuth(token, repo)
+
+  const [owner, name] = repo.split('/')
+  if (!owner || !name) {
+    setAuth(prev.t, prev.r)
+    throw new Error('Repositório deve ser no formato usuario/repo')
+  }
+
   try {
-    const r = await gh(`/repos/${repo}`)
-    return { ok: true, private: r.private, full_name: r.full_name }
+    const me = await gh('/user') // 401 aqui = token invalido/expirado
+    try {
+      const r = await gh(`/repos/${repo}`)
+      return { ok: true, private: r.private, full_name: r.full_name, login: me.login }
+    } catch (e) {
+      if (e.code === 404) {
+        throw new Error(
+          `Token válido (entrou como ${me.login}), mas ele não enxerga "${repo}".\n\n` +
+          `Quase sempre é o bloco "Repository access", que fica ACIMA das permissões ` +
+          `e vem no padrão "Public repositories" — troque para "Only select repositories" ` +
+          `e marque "${name}".\n\n` +
+          `Confira também se o "Resource owner" é "${owner}".`
+        )
+      }
+      throw e
+    }
   } catch (e) {
     setAuth(prev.t, prev.r)
     throw e
