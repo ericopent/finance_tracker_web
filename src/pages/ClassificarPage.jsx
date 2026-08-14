@@ -1,10 +1,10 @@
 import { useState } from 'react'
 import clsx from 'clsx'
-import { Tag, Check, Loader2, Search } from 'lucide-react'
+import { Tag, Check, Loader2, Search, Pencil } from 'lucide-react'
 import PageHeader from '../components/PageHeader'
 import KpiGrid from '../components/KpiGrid'
 import { useNaoClassificados, useCategorias, useLearnMerchant } from '../lib/api'
-import { money, moneyShort } from '../theme/gap'
+import { money, moneyShort, monthLabel } from '../theme/gap'
 
 /**
  * Fila de classificacao.
@@ -20,7 +20,9 @@ import { money, moneyShort } from '../theme/gap'
  * na hora, sem reimportar nada.
  */
 export default function ClassificarPage() {
-  const { grupos, total, n } = useNaoClassificados()
+  const [mes, setMes] = useState(null)
+  const [reclassificar, setReclassificar] = useState(false)
+  const { grupos, total, n, meses, isLoading } = useNaoClassificados({ mes, incluirClassificados: reclassificar })
   const categorias = useCategorias()
   const aprender = useLearnMerchant()
 
@@ -51,22 +53,57 @@ export default function ClassificarPage() {
       <PageHeader
         title="Classificar"
         subtitle="Uma escolha por lojista vale para todo o histórico, inclusive o que já foi importado."
+        right={
+          <div className="flex items-end gap-2">
+            <div>
+              <label className="gap-label">Fatura</label>
+              <select
+                className="gap-input text-base md:text-sm"
+                value={mes ?? ''}
+                onChange={(e) => setMes(e.target.value || null)}
+              >
+                <option value="">últimos 12 meses</option>
+                {meses.map((m) => <option key={m} value={m}>{monthLabel(m)}</option>)}
+              </select>
+            </div>
+            <button
+              onClick={() => setReclassificar((r) => !r)}
+              className={clsx(
+                'flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[12.5px] border transition-colors',
+                reclassificar
+                  ? 'bg-gap-blue text-white border-gap-blue font-semibold'
+                  : 'border-gap-border text-gap-muted hover:bg-gap-soft'
+              )}
+            >
+              <Pencil size={13} />Reclassificar
+            </button>
+          </div>
+        }
       />
 
       <KpiGrid
         items={[
-          { label: 'Sem categoria', value: money(total), sub: 'últimos 12 meses', tone: 'pos' },
-          { label: 'Lojistas', value: String(grupos.length), sub: `${n} lançamentos` },
+          { label: 'Sem categoria', value: money(total), sub: mes ? `fatura de ${monthLabel(mes)}` : 'últimos 12 meses', tone: 'pos' },
+          { label: 'Lojistas', value: String(grupos.length), sub: reclassificar ? 'todos' : `${n} sem categoria` },
           { label: 'Maior pendência', value: grupos[0] ? moneyShort(grupos[0].cents) : '—', sub: grupos[0]?.label?.slice(0, 22) ?? '' },
           { label: 'Resolvidos agora', value: String(feitos.length), sub: feitos.length ? money(feitos.reduce((a, f) => a + f.cents, 0)) : '—', tone: feitos.length ? 'neg' : undefined },
         ]}
       />
 
-      {grupos.length === 0 ? (
+      {isLoading ? (
+        <div className="gap-card p-6 mt-4 text-center text-gap-muted text-[12.5px]">
+          <Loader2 size={22} className="mx-auto animate-spin mb-2" />
+          carregando do GitHub…
+        </div>
+      ) : grupos.length === 0 ? (
         <div className="gap-card p-6 mt-4 text-center">
           <Check size={28} className="mx-auto text-gap-green mb-2" />
-          <div className="text-[13px] font-semibold text-gap-navy">Tudo classificado</div>
-          <div className="text-[11.5px] text-gap-muted mt-1">Nenhum gasto órfão nos últimos 12 meses.</div>
+          <div className="text-[13px] font-semibold text-gap-navy">
+            {reclassificar ? 'Nada nesse período' : 'Tudo classificado'}
+          </div>
+          <div className="text-[11.5px] text-gap-muted mt-1">
+            {mes ? `Nenhum gasto órfão na fatura de ${monthLabel(mes)}.` : 'Nenhum gasto órfão nos últimos 12 meses.'}
+          </div>
         </div>
       ) : (
         <>
@@ -94,6 +131,7 @@ export default function ClassificarPage() {
                     </div>
                     <div className="text-[11px] text-gap-muted">
                       {g.n} lançamento{g.n === 1 ? '' : 's'} · último {g.ultimo?.slice(8, 10)}/{g.ultimo?.slice(5, 7)}
+                      {g.cat && <> · <span className="text-gap-blue font-semibold">{g.cat}{g.sub ? ` · ${g.sub}` : ''}</span></>}
                     </div>
                   </div>
                   <div className="num text-[13px] font-bold text-gap-navy whitespace-nowrap">

@@ -98,9 +98,11 @@ export function hydrate(ledger, manual = [], statements = [], config = null) {
    */
   const mem = config?.memory ?? {}
   const comMemoria = (t) => {
-    if (t.cat || !t.mkey) return t
-    const m = mem[t.mkey]
-    return m ? { ...t, cat: m[0] ?? null, sub: m[1] ?? null } : t
+    const mkey = semMes(t.mkey)
+    const base = mkey === t.mkey ? t : { ...t, mkey }
+    if (base.cat || !mkey) return base
+    const m = mem[mkey] ?? mem[t.mkey]
+    return m ? { ...base, cat: m[0] ?? null, sub: m[1] ?? null } : base
   }
   const substituidos = new Set(statements.map((s) => s.ref))
   const out = (ledger?.txns ?? [])
@@ -143,6 +145,32 @@ export function hydrate(ledger, manual = [], statements = [], config = null) {
     }))
   }
   return out
+}
+
+// SO abreviacoes de 3 letras. Nome por extenso fica de fora porque "MARCO" e
+// "MAIO" sao nomes de gente: com eles na lista, "MARCO POLO BAR" virava
+// "POLO BAR" e dois lojistas diferentes se fundiam.
+const MES_TOKEN = /^(JAN|FEV|MAR|ABR|MAI|JUN|JUL|AGO|SET|OUT|NOV|DEZ)$/
+
+/**
+ * Tira o mes de dentro do nome do lojista.
+ *
+ * O Itau escreve "Medycorp Ass*jun Pac 2", "Medycorp Ass*jul Pac 2"... — mesmo
+ * contrato, um lojista diferente por mes. Assim ele nunca junta 5 meses e nunca
+ * e detectado como recorrente, embora seja R$ 488 fixos todo mes.
+ *
+ * Aplicado SOBRE a chave ja normalizada (nao recalculado da descricao) pra nao
+ * introduzir divergencia com o merchant_key do Python que gerou o baseline.
+ * Exige sobrar 2+ tokens: "JUL" sozinho continua sendo um lojista chamado JUL.
+ */
+export function semMes(key) {
+  if (!key) return key
+  const toks = String(key).split(' ')
+  // 4+ tokens: "MEDYCORP ASS JUN PAC 2" entra, "BAR DO MAR" e "MARCO POLO BAR"
+  // ficam de fora. Lojista com nome curto quase nunca carrega mes no meio.
+  if (toks.length < 4) return key
+  const limpo = toks.filter((t) => !MES_TOKEN.test(t))
+  return limpo.length >= 3 && limpo.length < toks.length ? limpo.join(' ') : key
 }
 
 /** Espelha scripts/backfill.py::merchant_key — tem que casar, senao o

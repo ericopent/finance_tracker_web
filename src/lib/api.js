@@ -136,31 +136,38 @@ export function useCategorias() {
  * Uma decisao resolve todas as ocorrencias, passadas e futuras. Ordenado por
  * valor pra voce atacar o que move o ponteiro primeiro.
  */
-export function useNaoClassificados(meses = 12) {
+export function useNaoClassificados({ mes = null, incluirClassificados = false } = {}) {
   const ds = useDataset()
-  if (!ds.data) return { grupos: [], total: 0, n: 0 }
+  // `isLoading` precisa sair daqui: sem ele a pagina renderiza "tudo
+  // classificado" enquanto os dados ainda estao vindo — a tela mente.
+  if (!ds.data) return { grupos: [], total: 0, n: 0, meses: [], isLoading: ds.isLoading }
+
   const txns = hydrate(ds.data.ledger, ds.data.manual, ds.data.statements, ds.data.config)
-  const cortes = [...new Set(txns.map((t) => t.cash))].sort().slice(-meses)
-  const janela = new Set(cortes)
+  const meses = [...new Set(txns.map((t) => t.cash).filter(Boolean))].sort().reverse()
+  const janela = mes ? new Set([mes]) : new Set(meses.slice(0, 12))
 
   const by = new Map()
   let total = 0
   let n = 0
   for (const t of txns) {
-    if (t.kind !== 'purchase' || t.cat || !t.mkey || !janela.has(t.cash)) continue
-    const g = by.get(t.mkey) ?? { key: t.mkey, label: t.desc, n: 0, cents: 0, ultimo: '', exemplos: [] }
+    if (t.kind !== 'purchase' || !t.mkey || !janela.has(t.cash)) continue
+    if (t.cat && !incluirClassificados) continue
+    const g = by.get(t.mkey) ?? {
+      key: t.mkey, label: t.desc, n: 0, cents: 0, ultimo: '', cat: t.cat ?? null, sub: t.sub ?? null,
+    }
     g.n++
     g.cents += t.cents
     if (t.date > g.ultimo) { g.ultimo = t.date; g.label = t.desc }
-    if (g.exemplos.length < 3) g.exemplos.push(t.desc)
+    if (t.cat && !g.cat) { g.cat = t.cat; g.sub = t.sub ?? null }
     by.set(t.mkey, g)
-    total += t.cents
-    n++
+    if (!t.cat) { total += t.cents; n++ }
   }
   return {
     grupos: [...by.values()].sort((a, b) => b.cents - a.cents),
     total,
     n,
+    meses,
+    isLoading: false,
   }
 }
 
