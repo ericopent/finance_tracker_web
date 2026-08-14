@@ -155,6 +155,17 @@ export async function readFile(path) {
   }
 }
 
+/** Lista um diretorio. Devolve [] se ainda nao existir (1o import). */
+export async function listDir(path) {
+  try {
+    const r = await gh(`/repos/${getRepo()}/contents/${path}?ref=${BRANCH}`)
+    return Array.isArray(r) ? r : []
+  } catch (e) {
+    if (e.code === 404) return []
+    throw e
+  }
+}
+
 export async function writeFile(path, text, sha, message) {
   const body = {
     message: message ?? `update ${path}`,

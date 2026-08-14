@@ -81,9 +81,17 @@ export function outflow(kind, cents) {
   }
 }
 
-/** ledger.json (linhas como array) + manual.jsonl -> lista de objetos. */
-export function hydrate(ledger, manual = []) {
-  const out = (ledger?.txns ?? []).map((r) => ({
+/**
+ * ledger.json (baseline) + statements importados + manual.jsonl -> objetos.
+ *
+ * Fatura importada pelo app SUBSTITUI o mesmo mes do baseline em vez de somar.
+ * Sem isso, reimportar um mes que ja veio do backfill contaria tudo duas vezes.
+ */
+export function hydrate(ledger, manual = [], statements = []) {
+  const substituidos = new Set(statements.map((s) => s.ref))
+  const out = (ledger?.txns ?? [])
+    .filter((r) => !substituidos.has(r[10]))
+    .map((r) => ({
     date: r[0],
     desc: r[1],
     mkey: r[2],
@@ -97,6 +105,12 @@ export function hydrate(ledger, manual = []) {
     cash: r[10],
     source: 'import',
   }))
+
+  // faturas importadas pelo app: ja vem no formato de objeto
+  for (const st of statements) {
+    for (const t of st.txns ?? []) out.push({ ...t, source: 'import' })
+  }
+
   for (const m of manual) {
     out.push({
       date: m.date,
@@ -272,9 +286,15 @@ function dayCurve(txns, exclude, currentMonth) {
 
 // ---------------------------------------------------------------- visao do mes
 
-export function monthView(ledger, config, manual, todayISO) {
-  const txns = hydrate(ledger, manual)
-  const last = ledger?.last_statement ?? null
+/** `ds` = { ledger, config, manual, statements } */
+export function monthView(ds, todayISO) {
+  const { ledger, config, manual = [], statements = [] } = ds ?? {}
+  const txns = hydrate(ledger, manual, statements)
+  // a fatura mais recente pode ter vindo do app, nao do backfill
+  const last = [ledger?.last_statement, ...statements.map((s) => s.ref)]
+    .filter(Boolean)
+    .sort()
+    .pop() ?? null
   const month = todayISO.slice(0, 7)
   const day = Number(todayISO.slice(8, 10))
   const dim = daysInMonth(Number(todayISO.slice(0, 4)), Number(todayISO.slice(5, 7)))
@@ -331,9 +351,13 @@ export function monthView(ledger, config, manual, todayISO) {
 
 // ---------------------------------------------------------------- fluxo de caixa
 
-export function cashflow(ledger, config, manual, fromMonth, horizon = 12, openingCents = 0) {
-  const txns = hydrate(ledger, manual)
-  const last = ledger?.last_statement ?? null
+export function cashflow(ds, fromMonth, horizon = 12, openingCents = 0) {
+  const { ledger, config, manual = [], statements = [] } = ds ?? {}
+  const txns = hydrate(ledger, manual, statements)
+  const last = [ledger?.last_statement, ...statements.map((s) => s.ref)]
+    .filter(Boolean)
+    .sort()
+    .pop() ?? null
   const detected = detectSubscriptions(txns, last)
   const exclude = detected.map((s) => s.key)
   const subs = detected.reduce((a, s) => a + s.cents, 0)

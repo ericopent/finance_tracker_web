@@ -1,5 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { readFile, appendJsonl, rewriteJsonl, writeFile, parseJsonl, getToken } from './github'
+import {
+  readFile, writeFile, appendJsonl, rewriteJsonl, parseJsonl, listDir, getToken,
+} from './github'
 import { monthView, cashflow, hydrate, merchantKey } from './engine'
 import { todayISO } from './money'
 
@@ -7,12 +9,15 @@ import { todayISO } from './money'
 const P_LEDGER = 'data/ledger.json'
 const P_CONFIG = 'data/config.json'
 const P_MANUAL = 'data/manual.jsonl'
+const D_STMT = 'data/statements'
 
 /**
- * Dataset completo, buscado uma vez e mantido em memoria.
+ * Dataset completo.
  *
- * ledger.json e imutavel entre imports (334KB, ~32KB no fio), entao vale cache
- * longo. manual.jsonl muda a cada lancamento e e invalidado pelas mutations.
+ * ledger.json e o baseline do backfill e nao muda; as faturas importadas pelo
+ * app viram arquivos separados em data/statements/. Ler os dois e juntar sai
+ * mais barato que reescrever 334KB a cada import — e impede que rodar o
+ * export_web.py de novo apague o que foi importado pelo celular.
  */
 export function useDataset() {
   return useQuery({
@@ -20,27 +25,36 @@ export function useDataset() {
     enabled: !!getToken(),
     staleTime: 5 * 60_000,
     queryFn: async () => {
-      const [ledger, config, manual] = await Promise.all([
+      const [ledger, config, manual, stmtFiles] = await Promise.all([
         readFile(P_LEDGER),
         readFile(P_CONFIG),
         readFile(P_MANUAL),
+        listDir(D_STMT),
       ])
-      if (!ledger) throw new Error(`${P_LEDGER} não existe no repo — rode scripts/export_web.py e commite`)
+      if (!ledger) {
+        throw new Error(`${P_LEDGER} não existe no repo.\nRode scripts/export_web.py e commite.`)
+      }
+      const statements = (
+        await Promise.all(
+          (stmtFiles ?? [])
+            .filter((f) => f.name.endsWith('.json'))
+            .map((f) => readFile(`${D_STMT}/${f.name}`).then((r) => (r ? JSON.parse(r.text) : null)))
+        )
+      ).filter(Boolean)
+
       return {
         ledger: JSON.parse(ledger.text),
-        config: config ? JSON.parse(config.text) : { recurring: [] },
+        config: config ? JSON.parse(config.text) : { recurring: [], rules: [], memory: {} },
         manual: parseJsonl(manual?.text ?? ''),
+        statements,
       }
     },
   })
 }
 
 /**
- * Visao do mes — calculada no cliente a partir do dataset.
- *
- * O calculo roda DURANTE o render, entao uma excecao aqui derrubaria a arvore
- * inteira. Capturando e devolvendo como `error`, o problema aparece na tela em
- * vez de virar tela branca.
+ * Visao do mes. O calculo roda DURANTE o render, entao uma excecao aqui
+ * derrubaria a arvore — capturando, o problema aparece na tela.
  */
 export function useMonthView(date) {
   const q = useDataset()
@@ -49,7 +63,7 @@ export function useMonthView(date) {
   let calcError = null
   if (q.data) {
     try {
-      data = monthView(q.data.ledger, q.data.config, q.data.manual, today)
+      data = monthView(q.data, today)
     } catch (e) {
       calcError = e instanceof Error ? e : new Error(String(e))
       calcError.message = `falha ao calcular o mês: ${calcError.message}`
@@ -61,10 +75,16 @@ export function useMonthView(date) {
 export function useCashflow(horizon = 12, openingCents = 0) {
   const q = useDataset()
   const from = todayISO().slice(0, 7)
-  return {
-    ...q,
-    data: q.data ? cashflow(q.data.ledger, q.data.config, q.data.manual, from, horizon, openingCents) : undefined,
+  let data
+  let calcError = null
+  if (q.data) {
+    try {
+      data = cashflow(q.data, from, horizon, openingCents)
+    } catch (e) {
+      calcError = e instanceof Error ? e : new Error(String(e))
+    }
   }
+  return { ...q, data, error: q.error ?? calcError }
 }
 
 /** Autocomplete: lojistas do historico, mais usados primeiro, com a categoria. */
@@ -74,14 +94,36 @@ export function useSuggest(q) {
   if (term.length < 2 || !ds.data) return []
   const key = merchantKey(term)
   const by = new Map()
-  for (const t of hydrate(ds.data.ledger, ds.data.manual)) {
+  for (const t of hydrate(ds.data.ledger, ds.data.manual, ds.data.statements)) {
     if (t.kind !== 'purchase' || !t.mkey.includes(key)) continue
-    const g = by.get(t.desc) ?? { description: t.desc, category: t.cat, subcategory: t.sub, last_cents: t.cents, uses: 0, last: '' }
+    const g = by.get(t.desc) ?? {
+      description: t.desc, category: t.cat, subcategory: t.sub,
+      last_cents: t.cents, uses: 0, last: '',
+    }
     g.uses++
-    if (t.date > g.last) { g.last = t.date; g.last_cents = t.cents; if (t.cat) { g.category = t.cat; g.subcategory = t.sub } }
+    if (t.date > g.last) {
+      g.last = t.date
+      g.last_cents = t.cents
+      if (t.cat) { g.category = t.cat; g.subcategory = t.sub }
+    }
     by.set(t.desc, g)
   }
-  return [...by.values()].sort((a, b) => b.uses - a.uses || b.last.localeCompare(a.last)).slice(0, 8)
+  return [...by.values()]
+    .sort((a, b) => b.uses - a.uses || b.last.localeCompare(a.last))
+    .slice(0, 8)
+}
+
+/** Categorias ja usadas — alimenta os seletores da revisao de import. */
+export function useCategorias() {
+  const ds = useDataset()
+  if (!ds.data) return []
+  const set = new Map()
+  for (const t of hydrate(ds.data.ledger, ds.data.manual, ds.data.statements)) {
+    if (!t.cat) continue
+    const k = t.sub ? `${t.cat}|${t.sub}` : t.cat
+    set.set(k, (set.get(k) ?? 0) + 1)
+  }
+  return [...set.entries()].sort((a, b) => b[1] - a[1]).map(([k]) => k)
 }
 
 // ---------------------------------------------------------------- escrita
@@ -97,7 +139,6 @@ function useDatasetMutation(fn) {
 export function useAddTxn() {
   return useDatasetMutation(async (t) => {
     const entry = {
-      // id local: nao precisa ser global, so unico o bastante pra apagar depois
       id: `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
       date: t.posted_on ?? todayISO(),
       desc: t.description.trim(),
@@ -118,10 +159,12 @@ export function useDeleteTxn() {
   )
 }
 
-/** Grava config.json inteiro (poucos KB) com o sha corrente. */
+/** Le, muta e grava o config.json com o sha corrente. */
 async function saveConfig(mutate, message) {
   const cur = await readFile(P_CONFIG)
-  const cfg = cur ? JSON.parse(cur.text) : { recurring: [] }
+  const cfg = cur ? JSON.parse(cur.text) : { recurring: [], rules: [], memory: {} }
+  cfg.recurring ??= []
+  cfg.memory ??= {}
   mutate(cfg)
   await writeFile(P_CONFIG, JSON.stringify(cfg, null, 2), cur?.sha, message)
 }
@@ -143,11 +186,39 @@ export function useDismissRecurring() {
   return useDatasetMutation((key) =>
     saveConfig((cfg) => {
       cfg.recurring = cfg.recurring.filter((r) => r.key !== key)
-      // registro inativo = "ja decidi que nao e recorrente, para de sugerir"
       cfg.recurring.push({
         id: Date.now(), label: key, direction: 'outflow', cents: 0,
         category: null, day: null, key, active: false, confirmed: false,
       })
     }, `não é recorrente: ${key}`)
   )
+}
+
+/**
+ * Grava a fatura importada + o que foi aprendido + limpa os manuais casados.
+ *
+ * Tres escritas, nesta ordem de proposito: se a segunda ou terceira falhar, a
+ * fatura ja esta salva e reimportar e idempotente (sobrescreve o mesmo arquivo).
+ * Ordem invertida perderia o import inteiro por causa de um erro de rede no fim.
+ */
+export function useSaveStatement() {
+  return useDatasetMutation(async ({ ref, txns, aprendidos, reconciliados }) => {
+    const path = `${D_STMT}/${ref}.json`
+    const cur = await readFile(path)
+    const body = { ref, generated: new Date().toISOString(), txns }
+    await writeFile(path, JSON.stringify(body), cur?.sha, `fatura ${ref} (${txns.length} lançamentos)`)
+
+    if (aprendidos && Object.keys(aprendidos).length) {
+      await saveConfig((cfg) => {
+        for (const [k, v] of Object.entries(aprendidos)) cfg.memory[k] = v
+      }, `aprende ${Object.keys(aprendidos).length} lojista(s) da fatura ${ref}`)
+    }
+
+    if (reconciliados?.length) {
+      const ids = new Set(reconciliados)
+      await rewriteJsonl(P_MANUAL, (o) => !ids.has(o.id),
+        `reconcilia ${ids.size} lançamento(s) com a fatura ${ref}`)
+    }
+    return { ref, n: txns.length }
+  })
 }
