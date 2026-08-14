@@ -26,6 +26,7 @@ export function setAuth(token, repo) {
 export function clearAuth() {
   localStorage.removeItem(LS_TOKEN)
   localStorage.removeItem(LS_REPO)
+  resetWriteCache() // trocou de repo/token: o que achavamos ter gravado nao vale
 }
 
 // ---------------------------------------------------------------- base64 utf-8
@@ -53,6 +54,11 @@ async function gh(path, opts = {}) {
   if (!token) throw new Error('sem token')
   const res = await fetch(`${API}${path}`, {
     ...opts,
+    // A API responde com `Cache-Control: private, max-age=60`. Sem no-store o
+    // navegador serve o GET do cache por 1 minuto, entao depois de gravar a
+    // releitura devolve o sha VELHO e todo PUT seguinte leva 409 — inclusive as
+    // tentativas de retry, que batiam todas na mesma resposta cacheada.
+    cache: 'no-store',
     headers: {
       Accept: 'application/vnd.github+json',
       Authorization: `Bearer ${token}`,
@@ -216,24 +222,52 @@ function serial(path, fn) {
  * chamamos de novo. Por isso as mutacoes sao "filtra e insere", nunca
  * "incrementa" — reaplicar um incremento contaria duas vezes.
  */
-async function readModifyWrite(path, transform, message, tries = 4) {
+/**
+ * Estado do que ESTE cliente gravou por ultimo.
+ *
+ * Depois de um PUT bem-sucedido a API devolve o sha novo. Guardar sha+conteudo
+ * evita depender da releitura, que e o caminho mais fragil: mesmo com no-store
+ * o servidor pode levar um instante pra refletir a escrita. Se outro aparelho
+ * gravar, o PUT da 409, o cache e descartado e a proxima volta relendo.
+ */
+const ultimoEscrito = new Map()
+
+async function baseAtual(path) {
+  const c = ultimoEscrito.get(path)
+  if (c) return c
+  const cur = await readFile(path)
+  return { sha: cur?.sha, text: cur?.text ?? null }
+}
+
+async function readModifyWrite(path, transform, message, tries = 5) {
   return serial(path, async () => {
     let ultimo
     for (let i = 0; i < tries; i++) {
-      const cur = await readFile(path)
-      const next = transform(cur?.text ?? null)
+      const cur = await baseAtual(path)
+      const next = transform(cur.text)
       if (next === null) return null
       try {
-        return await writeFile(path, next, cur?.sha, message)
+        const res = await writeFile(path, next, cur.sha, message)
+        const novoSha = res?.content?.sha
+        if (novoSha) ultimoEscrito.set(path, { sha: novoSha, text: next })
+        else ultimoEscrito.delete(path)
+        return res
       } catch (e) {
         ultimo = e
+        // o que estava em cache nao vale mais — proxima volta rele do servidor
+        ultimoEscrito.delete(path)
         const conflito = e.code === 409 || e.code === 422
         if (!conflito || i === tries - 1) throw e
-        await sleep(400 * (i + 1)) // o sha da API demora um pouco a estabilizar
+        await sleep(500 * (i + 1))
       }
     }
     throw ultimo
   })
+}
+
+/** Invalida o que este cliente acha que gravou (usar ao trocar de token/repo). */
+export function resetWriteCache() {
+  ultimoEscrito.clear()
 }
 
 /** Append numa linha de JSONL. */
