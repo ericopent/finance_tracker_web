@@ -15,10 +15,10 @@ import { merchantKey } from './engine.js'
 
 // ---------------------------------------------------------------- CSV
 
-/** Parser de CSV com aspas, BOM e delimitador detectado (`,` ou `;`). */
+/** Parser de CSV com aspas, BOM e delimitador detectado (`,` ou `;`). Devolve a grade crua. */
 export function parseCsv(text) {
   const clean = String(text ?? '').replace(/^﻿/, '').replace(/\r\n?/g, '\n')
-  if (!clean.trim()) return { header: [], rows: [] }
+  if (!clean.trim()) return []
 
   const first = clean.slice(0, clean.indexOf('\n') + 1 || undefined)
   const delim = (first.match(/;/g)?.length ?? 0) > (first.match(/,/g)?.length ?? 0) ? ';' : ','
@@ -39,23 +39,59 @@ export function parseCsv(text) {
     else cell += c
   }
   if (cell || row.length) { row.push(cell); rows.push(row) }
+  return rows
+}
 
-  const header = (rows.shift() ?? []).map((h) => h.trim())
-  return { header, rows: rows.filter((r) => r.some((c) => String(c).trim())) }
+/**
+ * Acha onde a tabela comeca de verdade.
+ *
+ * O CSV do banco tem cabecalho na linha 1, mas o XLSX do Itau tem 13 linhas de
+ * preambulo (nome, agencia, conta, total da fatura) antes de "Data |
+ * Lancamento | Parcelamento | Valor". Assumir linha 1 quebrava o import de
+ * Excel inteiro.
+ */
+export function locateTable(grid) {
+  const limite = Math.min(grid.length, 40)
+  for (let i = 0; i < limite; i++) {
+    const cells = grid[i].map(norm)
+    const temDesc = cells.some((c) => /lancamento|descricao|historico|estabelecimento/.test(c))
+    const temValor = cells.some((c) => /^valor$|amount|quantia/.test(c))
+    if (temDesc && temValor) {
+      return {
+        header: grid[i].map((h) => String(h ?? '').trim()),
+        rows: grid.slice(i + 1).filter((r) => r.some((c) => String(c ?? '').trim())),
+        headerRow: i + 1,
+      }
+    }
+  }
+  // sem cabecalho reconhecivel: trata a linha 1 como cabecalho (comportamento antigo)
+  const [h = [], ...r] = grid
+  return {
+    header: h.map((x) => String(x ?? '').trim()),
+    rows: r.filter((x) => x.some((c) => String(c ?? '').trim())),
+    headerRow: 1,
+  }
 }
 
 const norm = (s) =>
   String(s ?? '').normalize('NFKD').replace(/[̀-ͯ]/g, '').toLowerCase().trim()
 
-/** Descobre quais colunas sao data / descricao / valor. */
+/** Descobre quais colunas sao data / descricao / valor / parcelamento. */
 export function detectColumns(header) {
   const h = header.map(norm)
-  const find = (cands) => h.findIndex((x) => cands.some((c) => x === c || x.includes(c)))
+  const find = (cands) => h.findIndex((x) => x && cands.some((c) => x === c || x.includes(c)))
   return {
     date: find(['data', 'date', 'dt']),
     desc: find(['lancamento', 'descricao', 'description', 'historico', 'estabelecimento', 'title']),
     value: find(['valor', 'amount', 'value', 'quantia']),
+    // o XLSX do Itau tem coluna propria de parcelamento; no CSV vem colado no nome
+    parc: find(['parcelamento', 'parcela']),
   }
+}
+
+const MESES_PT = {
+  janeiro: 1, fevereiro: 2, marco: 3, abril: 4, maio: 5, junho: 6,
+  julho: 7, agosto: 8, setembro: 9, outubro: 10, novembro: 11, dezembro: 12,
 }
 
 // ---------------------------------------------------------------- valores e datas
@@ -103,10 +139,37 @@ export function parseDate(raw) {
   return null
 }
 
-/** Mes de referencia pelo nome do arquivo: fatura-20260605.csv -> 2026-06 */
+/**
+ * Mes de referencia a partir do nome do arquivo ou da aba.
+ *
+ *   fatura-20260605.csv                        -> 2026-06
+ *   Fatura 07-26              (aba do Itau)    -> 2026-07
+ *   fatura-paga-final 9058-julho2026.xlsx      -> 2026-07
+ *
+ * O terceiro caso importa: o "9058" do numero do cartao era lido como ano.
+ */
 export function refMonthFromName(name) {
-  const m = String(name ?? '').match(/(\d{4})[-_]?(\d{2})[-_]?(\d{2})?/)
-  return m ? `${m[1]}-${m[2]}` : null
+  const s = String(name ?? '')
+
+  // "julho2026" / "julho de 2026"
+  const pt = norm(s).match(
+    /(janeiro|fevereiro|marco|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)\D{0,4}(\d{4})/
+  )
+  if (pt) return `${pt[2]}-${String(MESES_PT[pt[1]]).padStart(2, '0')}`
+
+  // "20260605"
+  const compacto = s.match(/(20\d{2})(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])/)
+  if (compacto) return `${compacto[1]}-${compacto[2]}`
+
+  // "2026-06" / "2026_06"
+  const iso = s.match(/(20\d{2})[-_](0[1-9]|1[0-2])\b/)
+  if (iso) return `${iso[1]}-${iso[2]}`
+
+  // "Fatura 07-26" -> mes-ano de 2 digitos
+  const curto = s.match(/\b(0[1-9]|1[0-2])[-/](\d{2})\b/)
+  if (curto) return `20${curto[2]}-${curto[1]}`
+
+  return null
 }
 
 // ---------------------------------------------------------------- kind (espelha backfill.py)
@@ -148,20 +211,24 @@ export function classify(desc, config) {
 // Exigir espaco perdia 18 dos 29 contratos da fatura de junho.
 const PARCELA = /(\d{2})\/(\d{2})\s*$/
 
+/** Coluna Parcelamento do Itau: "Parcela 1 de 10" — e nao "01/10". */
+const PARCELA_COL = /(?:parcela\s*)?(\d{1,2})\s*(?:de|\/)\s*(\d{1,2})/i
+
 /**
  * Transforma linhas cruas na fatura estruturada.
  * `anchorFor` resolve a ancora do contrato parcelado: mes da fatura menos
  * (parcela atual - 1), igual ao backfill.
  */
-export function buildStatement({ header, rows, refMonth, config, fileName }) {
+export function buildStatement({ grid, refMonth, config, fileName, sheetName }) {
+  const { header, rows } = locateTable(grid ?? [])
   const col = detectColumns(header)
   if (col.desc < 0 || col.value < 0) {
     throw new Error(
-      `Não achei as colunas necessárias.\nCabeçalho lido: ${header.join(' | ') || '(vazio)'}\n` +
+      `Não achei as colunas necessárias.\nCabeçalho lido: ${header.filter(Boolean).join(' | ') || '(vazio)'}\n` +
       `Preciso de uma coluna de descrição (lançamento/descrição) e uma de valor.`
     )
   }
-  const ref = refMonth || refMonthFromName(fileName)
+  const ref = refMonth || refMonthFromName(sheetName) || refMonthFromName(fileName)
   if (!ref) throw new Error('Não consegui deduzir o mês da fatura. Escolha no seletor.')
 
   const txns = []
@@ -169,15 +236,24 @@ export function buildStatement({ header, rows, refMonth, config, fileName }) {
   rows.forEach((r, i) => {
     const desc = String(r[col.desc] ?? '').trim()
     const cents = parseValue(r[col.value])
+    const date = col.date >= 0 ? parseDate(r[col.date]) : null
+
     if (!desc || cents === null) {
-      if (desc || r.some((c) => String(c).trim())) problemas.push({ linha: i + 2, motivo: 'valor ilegível', raw: r.join(' | ').slice(0, 70) })
+      // So reclama de linha que PARECE lancamento (tem data ou valor). O rodape
+      // do Itau ("Importante saber" + texto juridico) nao e erro, e ruido de
+      // layout — reportar isso so assusta sem informar nada.
+      if (date || cents !== null) {
+        problemas.push({ linha: i + 1, motivo: 'incompleta', raw: r.filter((c) => String(c).trim()).join(' | ').slice(0, 70) })
+      }
       return
     }
-    const date = (col.date >= 0 ? parseDate(r[col.date]) : null) ?? `${ref}-01`
+    const quando = date ?? `${ref}-01`
     const kind = classifyKind(desc, cents)
     const { cat, sub, via } = kind === 'purchase' ? classify(desc, config) : { cat: null, sub: null, via: null }
 
+    // parcela pode vir colada no nome (CSV) ou em coluna propria (XLSX do Itau)
     const p = desc.match(PARCELA)
+      ?? (col.parc >= 0 ? String(r[col.parc] ?? '').match(PARCELA_COL) : null)
     let ino = null, itot = null, igrp = null
     if (p) {
       ino = Number(p[1]); itot = Number(p[2])
@@ -186,7 +262,7 @@ export function buildStatement({ header, rows, refMonth, config, fileName }) {
     }
 
     txns.push({
-      date, desc, mkey: merchantKey(desc), cents: Math.abs(cents),
+      date: quando, desc, mkey: merchantKey(desc), cents: Math.abs(cents),
       kind, cat, sub, ino, itot, igrp, cash: ref, via,
     })
   })

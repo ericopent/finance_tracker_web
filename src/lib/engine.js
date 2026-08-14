@@ -242,15 +242,23 @@ export function declaredRecurring(config, direction) {
 
 // ---------------------------------------------------------------- 3. discricionario
 
-/** Totais mensais do gasto variavel — nem parcela, nem recorrente.
- *  `month < currentMonth` descarta o mes em curso por ser parcial. */
+/**
+ * Totais mensais do gasto variavel — nem parcela, nem recorrente.
+ *
+ * Agrupa por CASH month (mes da fatura), nao por data de compra. As duas
+ * medem a mesma coisa ("um mes de gasto variavel"), mas a janela da fatura e
+ * completa por construcao, enquanto o mes-calendario e cortado pelo
+ * fechamento: fev/26 dava R$ 1.371 e mar/26 R$ 20.105, quando pela fatura sao
+ * R$ 9.292 e R$ 11.466. Puro artefato de borda, que inflava a faixa de
+ * incerteza em 66% (p90-p10 caiu de R$ 8.041 pra R$ 4.832).
+ */
 function discretionaryHistory(txns, exclude, currentMonth, months = 12) {
   const ex = new Set(exclude)
   const by = new Map()
   for (const t of txns) {
     if (t.igrp != null || t.kind === 'payment' || ex.has(t.mkey)) continue
-    const m = t.date.slice(0, 7)
-    if (m >= currentMonth) continue
+    const m = t.cash ?? t.date.slice(0, 7)
+    if (m >= currentMonth) continue // mes em curso e parcial
     by.set(m, (by.get(m) ?? 0) + outflow(t.kind, t.cents))
   }
   return [...by.entries()].sort((a, b) => a[0].localeCompare(b[0])).slice(-months).map(([, v]) => v)

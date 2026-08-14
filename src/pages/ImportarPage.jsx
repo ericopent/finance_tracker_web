@@ -8,19 +8,24 @@ import { useDataset, useSaveStatement, useCategorias } from '../lib/api'
 import { parseCsv, buildStatement, reconcile, refMonthFromName } from '../lib/import'
 import { money, monthLabel } from '../theme/gap'
 
-/** .xlsx exige uma lib de ~400KB — so baixa se voce escolher um Excel. */
+/**
+ * Le o arquivo e devolve a grade CRUA — quem acha o cabecalho e o locateTable,
+ * porque o XLSX do Itau tem 13 linhas de preambulo antes da tabela.
+ * A lib de xlsx (~429KB) so baixa se voce escolher um Excel de verdade.
+ */
 async function lerArquivo(file) {
   const nome = file.name.toLowerCase()
   if (nome.endsWith('.csv') || nome.endsWith('.txt')) {
-    return parseCsv(await file.text())
+    return { grid: parseCsv(await file.text()), sheetName: null }
   }
   if (nome.endsWith('.xlsx') || nome.endsWith('.xls')) {
     const XLSX = await import('xlsx')
-    const wb = XLSX.read(await file.arrayBuffer(), { cellDates: false })
-    const sh = wb.Sheets[wb.SheetNames[0]]
+    const wb = XLSX.read(await file.arrayBuffer(), { cellDates: true })
+    const nomeAba = wb.SheetNames[0]
+    const sh = wb.Sheets[nomeAba]
+    // raw:false formata a celula como o Excel mostra; datas viram texto legivel
     const grid = XLSX.utils.sheet_to_json(sh, { header: 1, raw: false, defval: '' })
-    const header = (grid.shift() ?? []).map((h) => String(h).trim())
-    return { header, rows: grid.filter((r) => r.some((c) => String(c).trim())) }
+    return { grid, sheetName: nomeAba }
   }
   throw new Error(`Formato não suportado: ${file.name}. Use .csv ou .xlsx.`)
 }
@@ -40,10 +45,9 @@ export default function ImportarPage() {
     if (!file) return
     setErro(null); setPronto(null); setLendo(true)
     try {
-      const { header, rows } = await lerArquivo(file)
+      const { grid, sheetName } = await lerArquivo(file)
       const st = buildStatement({
-        header, rows, config: ds.data?.config, fileName: file.name,
-        refMonth: refMonthFromName(file.name),
+        grid, config: ds.data?.config, fileName: file.name, sheetName,
       })
       const doMes = (ds.data?.manual ?? []).filter(
         (m) => m.date >= `${st.ref}-01` || m.date.slice(0, 7) >= mesAnterior(st.ref)
