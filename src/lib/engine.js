@@ -708,7 +708,18 @@ export function monthView(ds, todayISO) {
   const installments = installmentsDue(txns, last, fatura_alvo)
   const installments_cents = installments.reduce((a, i) => a + i.cents, 0)
 
-  const detected = detectSubscriptions(txns, last)
+  /*
+   * Declarado GANHA de detectado, e o detectado sai da lista.
+   *
+   * Confirmar no card "isso e recorrente?" um lojista que o detector JA pegava
+   * sozinho fazia ele entrar duas vezes — uma pelo valor calculado, outra pelo
+   * confirmado — e o travado somava a mesma assinatura em dobro. Quem manda e a
+   * decisao explicita: se voce cadastrou, e o seu valor que vale.
+   */
+  const declaredKeys = new Set(
+    declaredRecurring(config, 'outflow').map((r) => r.key).filter(Boolean)
+  )
+  const detected = detectSubscriptions(txns, last).filter((s) => !declaredKeys.has(s.key))
   const subscriptions_cents = detected.reduce((a, s) => a + s.cents, 0)
   // sem isso a assinatura conta duas vezes: travada aqui e diluida na projecao
   const exclude = detected.map((s) => s.key)
@@ -1045,8 +1056,10 @@ export function cashflow(ds, fromMonth, horizon = 12, openingCents = 0, todayISO
     .filter(Boolean)
     .sort()
     .pop() ?? null
-  const detected = detectSubscriptions(txns, last)
   const fixedAll = declaredRecurring(config, 'outflow')
+  // mesma deduplicacao do monthView: declarado ganha, detectado sai da lista
+  const declaredKeys = new Set(fixedAll.map((r) => r.key).filter(Boolean))
+  const detected = detectSubscriptions(txns, last).filter((s) => !declaredKeys.has(s.key))
 
   /*
    * Mesma exclusao do monthView, e pela mesma razao.

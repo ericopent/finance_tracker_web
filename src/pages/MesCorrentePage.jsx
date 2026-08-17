@@ -371,7 +371,9 @@ function Eventos({ itens }) {
  * escondia qual metade da pra agir.
  */
 function AindaEntra({ v }) {
-  const [aberto, setAberto] = useState(false)
+  // aberto por padrao: a tabela E o conteudo do card. Recolhido, o card virava
+  // mais um numero agregado — exatamente o que ele existe pra abrir.
+  const [aberto, setAberto] = useState(true)
   const linhas = v.falta_por_categoria ?? []
   if (!linhas.length) return null
   const fixo = linhas.reduce((a, l) => a + l.fixo_cents, 0)
