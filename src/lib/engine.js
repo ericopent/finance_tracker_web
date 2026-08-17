@@ -552,7 +552,7 @@ const DIAS_CICLO = 30
  * detalha-se por categoria so pra medir consumo contra a meta.
  */
 function goalView({ config, elapsed_share, fixed_outflow_cents, ja_na_fatura_cents,
-                    a_entrar_cents, variavelTxns, todayISO }) {
+                    a_entrar_cents, variavelTxns, restante_variavel_cents, todayISO }) {
   const meta = config?.budget
   if (!meta?.total_cents) return null
 
@@ -602,10 +602,15 @@ function goalView({ config, elapsed_share, fixed_outflow_cents, ja_na_fatura_cen
     + ritmo_cents * (DIAS_CICLO - dias_com_dado)
 
   const porCat = new Map()
+  // peso do rateio = so a ROTINA. Evento nao se repete, entao nao deve puxar
+  // pra si uma fatia do que ainda falta — mesma regra do card "ainda entra".
+  let baseRateio = 0
   for (const t of variavelTxns) {
     const c = t.cat || 'Sem categoria'
-    const g = porCat.get(c) ?? { cents: 0, n: 0 }
-    g.cents += outflow(t.kind, t.cents); g.n++
+    const g = porCat.get(c) ?? { cents: 0, n: 0, rotina: 0 }
+    const v = outflow(t.kind, t.cents)
+    g.cents += v; g.n++
+    if (!t.event) { g.rotina += v; baseRateio += v }
     porCat.set(c, g)
   }
   const metasCat = meta.categories ?? {}
@@ -616,15 +621,21 @@ function goalView({ config, elapsed_share, fixed_outflow_cents, ja_na_fatura_cen
       const meta_cents = metasCat[cat] ?? null
       const share = meta_cents ? consumido_cents / meta_cents : null
       /*
-       * Projecao da categoria = consumido / fracao decorrida. Util pra ver de
-       * onde vem o estouro, mas RUIDOSA: uma categoria com 9 lancamentos em 14
-       * dias e 63% do valor em 3 deles ja projetou uma faixa de 30% pra mesma
-       * quinzena dependendo da curva usada. Por isso vem com `confiavel`:
-       * abaixo de 8 lancamentos o numero e indicacao, nao previsao — e a
-       * projecao do TOTAL continua saindo do agregado, nunca da soma destes.
+       * Projetado = consumido + a fatia da categoria no que AINDA falta.
+       *
+       * Nao e `consumido / fracao decorrida`. Dividir pela fracao projeta cada
+       * categoria isolada, e isso e ruidoso (poucos lancamentos numa quinzena)
+       * — mas o pior e que dava um numero DIFERENTE do card "ainda deve
+       * entrar", que rateia o total agregado. O mesmo gasto com dois valores em
+       * dois cards da mesma tela, e o usuario sem saber em qual acreditar.
+       *
+       * Agora os dois partem do mesmo agregado (o unico numero confiavel) e da
+       * mesma distribuicao observada. `confiavel` continua marcando as
+       * categorias com poucos lancamentos, onde a DIVISAO e fraca mesmo que o
+       * total esteja certo.
        */
-      const projetado_cents = elapsed_share > 0
-        ? Math.round(consumido_cents / elapsed_share) : consumido_cents
+      const peso = baseRateio > 0 ? g.rotina / baseRateio : 0
+      const projetado_cents = consumido_cents + Math.round(restante_variavel_cents * peso)
       return {
         cat,
         meta_cents,
@@ -936,6 +947,9 @@ export function monthView(ds, todayISO) {
     goal: goalView({
       config, elapsed_share, fixed_outflow_cents, ja_na_fatura_cents, a_entrar_cents,
       variavelTxns: [...variavelNaFatura, ...loggedTxns], todayISO,
+      // a MESMA fatia que o card "ainda deve entrar" rateia, pra os dois cards
+      // da mesma tela nao darem numeros diferentes pro mesmo gasto
+      restante_variavel_cents: remaining.p50,
     }),
     candidates: detectCandidates(txns, last, config),
     /*
