@@ -223,7 +223,7 @@ const PARCELA_COL = /(?:parcela\s*)?(\d{1,2})\s*(?:de|\/)\s*(\d{1,2})/i
  * (parcela atual - 1), igual ao backfill.
  */
 export function buildStatement({ grid, refMonth, config, fileName, sheetName }) {
-  const { header, rows } = locateTable(grid ?? [])
+  const { header, rows, headerRow } = locateTable(grid ?? [])
   const col = detectColumns(header)
   if (col.desc < 0 || col.value < 0) {
     throw new Error(
@@ -316,8 +316,23 @@ export function buildStatement({ grid, refMonth, config, fileName, sheetName }) 
     })
   })
 
-  const meta = lerCabecalho(grid ?? [])
-  return { ref, txns, problemas, fileName: fileName ?? null, ...meta }
+  /*
+   * Pagamento ANTECIPADO abate a fatura corrente.
+   *
+   * A fatura traz duas coisas com o mesmo nome "Pagamento Efetuado": a quitacao
+   * da fatura ANTERIOR (cai no comeco do ciclo, pelo valor cheio dela) e um
+   * eventual pagamento adiantado desta aqui. Quando os dois aparecem, a soma
+   * das compras nao bate com o "Voce pagou" impresso — e a diferenca e
+   * exatamente o adiantamento.
+   *
+   * Regra: o MAIOR pagamento e a quitacao da anterior; qualquer outro e
+   * adiantamento e reduz esta fatura. Confere em todas as faturas testadas.
+   */
+  const pagos = txns.filter((t) => t.kind === 'payment').map((t) => t.cents).sort((a, b) => b - a)
+  const adiantamentos_cents = pagos.slice(1).reduce((a, c) => a + c, 0)
+
+  const meta = lerCabecalho(grid ?? [], headerRow)
+  return { ref, txns, problemas, adiantamentos_cents, fileName: fileName ?? null, ...meta }
 }
 
 /**
@@ -329,27 +344,46 @@ export function buildStatement({ grid, refMonth, config, fileName, sheetName }) 
  * Fatura ABERTA importa porque ela e parcial por natureza: o ciclo ainda esta
  * correndo e o valor so cresce.
  */
-function lerCabecalho(grid) {
+function lerCabecalho(grid, headerRow) {
+  // so o preambulo: depois comeca a tabela, e uma compra grande viraria "total"
+  const preambulo = grid.slice(0, Math.max(0, (headerRow ?? 30) - 1))
   let aberta = null
   let totalImpresso = null
   let vencimento = null
 
-  for (const row of grid.slice(0, 30)) {
-    const linha = row.map((c) => String(c ?? '')).join(' ')
-    const n = norm(linha)
+  for (const row of preambulo) {
+    const n = norm(row.map((c) => String(c ?? '')).join(' '))
     if (aberta === null && /\bfatura\b/.test(n)) {
       if (/\baberta\b|valor ate o momento/.test(n)) aberta = true
       else if (/\bfechada\b|fatura paga/.test(n)) aberta = false
     }
-    if (totalImpresso === null && /valor ate o momento|voce pagou|^\s*aberta\b|\bfechada\b/.test(n)) {
-      for (const c of row) {
-        const v = parseValue(c)
-        if (v !== null && Math.abs(v) > 1000) { totalImpresso = Math.abs(v); break }
+
+    /*
+     * O valor mora numa linha SEPARADA do rotulo na fatura fechada:
+     *
+     *   [7] Fatura Fechada - <mes>/<ano>
+     *   [8] Cartao | Valor | Vencimento
+     *   [9] <nome do cartao> | R$ <total> | <vencimento>
+     *
+     * Procurar so na linha do rotulo achava o total da ABERTA (onde os dois
+     * dividem a linha) e NUNCA o da fechada. Ancorar no "R$" explicito evita
+     * confundir com o numero do cartao ou com data serializada.
+     */
+    if (totalImpresso === null) {
+      for (let j = 0; j < row.length; j++) {
+        const cru = String(row[j] ?? '')
+        if (!/R\$/.test(cru)) continue
+        const v = parseValue(cru)
+        if (v === null || Math.abs(v) <= 1000) continue
+        totalImpresso = Math.abs(v)
+        // o vencimento e o vizinho na MESMA linha — pegar a primeira data do
+        // preambulo trazia o "Atualizacao: 14/08/2026" da fatura aberta
+        for (const c of row.slice(j + 1)) {
+          const d = String(c ?? '').match(/^(\d{2}\/\d{2}\/\d{4})/)
+          if (d) { vencimento = parseDate(d[1]); break }
+        }
+        break
       }
-    }
-    if (!vencimento) {
-      const m = linha.match(/(\d{2}\/\d{2}\/\d{4})/)
-      if (m && /venc/.test(n)) vencimento = parseDate(m[1])
     }
   }
   return { aberta: aberta ?? false, totalImpresso, vencimento }

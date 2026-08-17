@@ -17,6 +17,10 @@
 export const LOOKBACK_MONTHS = 6
 export const MIN_MONTHS_PRESENT = 5
 export const MAX_CV = 0.15
+/** Faturas fechadas que definem o NIVEL do gasto variavel projetado. Curto de
+ *  proposito: mudanca de habito precisa aparecer no mes seguinte, nao daqui a
+ *  um ano. A banda de incerteza continua vindo da janela de 12 meses. */
+export const NIVEL_MESES = 2
 const MIN_MONTHS_CAND = 3
 const MAX_CV_CAND = 0.40
 const MIN_CENTS_CAND = 2000
@@ -87,6 +91,18 @@ export function outflow(kind, cents) {
  * Fatura importada pelo app SUBSTITUI o mesmo mes do baseline em vez de somar.
  * Sem isso, reimportar um mes que ja veio do backfill contaria tudo duas vezes.
  */
+/**
+ * Identidade de UM lancamento, pra marca-lo como evento.
+ *
+ * Deliberadamente nao e o merchant_key: o mesmo lojista pode ter uma compra
+ * rotineira e outra dez vezes maior — marcar o lojista jogaria fora o gasto normal junto. E
+ * deliberadamente nao e o indice da linha: reimportar a fatura reordena tudo.
+ * Data + lojista + valor sobrevive a reimport e distingue os dois casos.
+ */
+export function eventKey(t) {
+  return `${t.date}|${t.mkey}|${t.cents}`
+}
+
 export function hydrate(ledger, manual = [], statements = [], config = null) {
   /*
    * A memoria e aplicada na LEITURA, nao gravada dentro de cada fatura.
@@ -97,12 +113,20 @@ export function hydrate(ledger, manual = [], statements = [], config = null) {
    * tudo.
    */
   const mem = config?.memory ?? {}
+  /*
+   * Evento marcado a mao, aplicado na LEITURA pelo mesmo motivo da memoria:
+   * reimportar a fatura nao pode apagar a decisao. `1` = e evento, `0` = ja
+   * perguntei e nao e (pra parar de sugerir).
+   */
+  const eventos = config?.events ?? {}
   const comMemoria = (t) => {
     const mkey = semMes(t.mkey)
     const base = mkey === t.mkey ? t : { ...t, mkey }
-    if (base.cat || !mkey) return base
+    const ev = eventos[eventKey(base)] ?? eventos[eventKey(t)]
+    const comEv = ev === 1 ? { ...base, event: true } : base
+    if (comEv.cat || !mkey) return comEv
     const m = mem[mkey] ?? mem[t.mkey]
-    return m ? { ...base, cat: m[0] ?? null, sub: m[1] ?? null } : base
+    return m ? { ...comEv, cat: m[0] ?? null, sub: m[1] ?? null } : comEv
   }
   const substituidos = new Set(statements.map((s) => s.ref))
   const out = (ledger?.txns ?? [])
@@ -233,18 +257,54 @@ function merchantStats(txns, lastStatement, minMonths) {
   for (const t of txns) {
     if (t.kind !== 'purchase' || t.igrp != null || t.cash < floor) continue
     let g = by.get(t.mkey)
-    if (!g) { g = { key: t.mkey, months: new Set(), vals: [], label: t.desc, cat: t.cat }; by.set(t.mkey, g) }
-    g.months.add(t.cash)
-    g.vals.push(t.cents)
+    if (!g) { g = { key: t.mkey, porMes: new Map(), label: t.desc, cat: t.cat }; by.set(t.mkey, g) }
+    /*
+     * Agrega por MES antes de estatistica.
+     *
+     * Antes a mediana era das TRANSACOES: transporte publico, cobrado ~15x por
+     * mes, entrava no bloco travado pelo valor de UMA passagem em vez do custo
+     * mensal. A pergunta que o bloco responde e "quanto este lojista me custa
+     * por mes", nao "quanto custa cada compra".
+     */
+    g.porMes.set(t.cash, (g.porMes.get(t.cash) ?? 0) + t.cents)
     if (t.cat && !g.cat) g.cat = t.cat
   }
+
   const out = []
   for (const g of by.values()) {
-    if (g.months.size < minMonths || !g.vals.length) continue
-    const sorted = [...g.vals].sort((a, b) => a - b)
+    const meses = [...g.porMes.entries()].sort((a, b) => a[0].localeCompare(b[0]))
+    if (meses.length < minMonths) continue
+    const vals = meses.map(([, v]) => v)
+
+    /*
+     * cv na janela cheia confunde MUDANCA DE PRECO com instabilidade.
+     *
+     * Uma assinatura que dobra de preco no meio da janela fica com cv ~0,30 e
+     * cai no variavel — mas ha tres meses ela e um valor cravado, ou seja,
+     * perfeitamente previsivel. O cv alto descrevia o passado, nao o futuro.
+     *
+     * Testa-se entao da janela mais longa pra mais curta e fica-se com a
+     * primeira estavel. O piso de `minMonths` continua valendo, entao ninguem
+     * vira recorrente por dois meses soltos: precisa aparecer em 5 dos 6 E ter
+     * valor estavel nos ultimos 3 (ou 2).
+     */
+    let usados = vals
+    let mudou_preco = false
+    /*
+     * A janela curta tem piso de 3 meses. Com 2, uma recarga de credito de API
+     * — que variou 7x em seis meses — travava como "assinatura" so porque dois
+     * meses seguidos calharam de ficar proximos. Com 3, o cv dela volta a
+     * estourar e ela fica no variavel, que e onde consumo variavel pertence;
+     * assinaturas que mudaram de preco de verdade continuam sendo capturadas.
+     */
+    if (cvOf(vals) > MAX_CV && vals.length > 3 && cvOf(vals.slice(-3)) <= MAX_CV) {
+      usados = vals.slice(-3); mudou_preco = true
+    }
+    const sorted = [...usados].sort((a, b) => a - b)
     out.push({
       key: g.key, label: g.label, category: g.cat ?? null,
-      months: g.months.size, median: Math.round(pct(sorted, 0.5)), cv: cvOf(g.vals),
+      months: meses.length, median: Math.round(pct(sorted, 0.5)), cv: cvOf(usados),
+      cv_janela: cvOf(vals), mudou_preco, meses_usados: usados.length,
     })
   }
   return out
@@ -294,16 +354,135 @@ export function declaredRecurring(config, direction) {
  * R$ 9.292 e R$ 11.466. Puro artefato de borda, que inflava a faixa de
  * incerteza em 66% (p90-p10 caiu de R$ 8.041 pra R$ 4.832).
  */
-function discretionaryHistory(txns, exclude, currentMonth, months = 12) {
+function discretionaryHistory(txns, exclude, currentMonth, months = 12, modo = 'sem-evento') {
   const ex = new Set(exclude)
   const by = new Map()
   for (const t of txns) {
     if (t.igrp != null || t.kind === 'payment' || ex.has(t.mkey)) continue
     const m = t.cash ?? t.date.slice(0, 7)
     if (m >= currentMonth) continue // mes em curso e parcial
-    by.set(m, (by.get(m) ?? 0) + outflow(t.kind, t.cents))
+    /*
+     * O mes precisa existir na grade mesmo quando nao tem nada da categoria
+     * pedida. Sem isso a provisao de evento dividia o total por 3 (os meses em
+     * que houve evento) em vez de 12 — e uma viagem por ano virava provisao de
+     * viagem a cada quatro meses.
+     */
+    if (!by.has(m)) by.set(m, 0)
+    if (modo === 'sem-evento' && t.event) continue
+    if (modo === 'so-evento' && !t.event) continue
+    by.set(m, by.get(m) + outflow(t.kind, t.cents))
   }
   return [...by.entries()].sort((a, b) => a[0].localeCompare(b[0])).slice(-months).map(([, v]) => v)
+}
+
+/**
+ * NIVEL do gasto variavel — a base UNICA das duas abas.
+ *
+ * Existe como funcao propria porque ja divergiu na pratica: o mes corrente
+ * projetava o resto do ciclo pela mediana de 12 meses enquanto o fluxo de caixa
+ * projetava os meses seguintes pelas 2 ultimas faturas. Resultado absurdo — o
+ * mes seguinte saia MAIOR que o atual mesmo com quase mil reais a menos de
+ * parcela, porque a janela longa ainda carregava um mes de pico ja superado.
+ *
+ * Nivel: media das ultimas `NIVEL_MESES` faturas, sem evento.
+ * Banda:  razao p10/p50 e p90/p50 dos 12 meses, aplicada sobre o nivel.
+ * Evento: media de 12 meses, devolvida a parte como provisao.
+ */
+export function variableLevel(txns, exclude, currentMonth, emCurso = null) {
+  const longo = [...discretionaryHistory(txns, exclude, currentMonth)].sort((a, b) => a - b)
+  const p50_longo = Math.round(pct(longo, 0.5))
+  const r10 = p50_longo > 0 ? pct(longo, 0.10) / p50_longo : 0.75
+  const r90 = p50_longo > 0 ? pct(longo, 0.90) / p50_longo : 1.35
+
+  const recente = discretionaryHistory(txns, exclude, currentMonth, NIVEL_MESES)
+  let soma = recente.reduce((a, b) => a + b, 0)
+  let peso = recente.length
+  let curso = null
+
+  /*
+   * Abaixo de 1/4 do ciclo a anualizacao e chute: uma compra grande no dia 3
+   * viraria "nivel" pro mes inteiro. O peso ainda cresce com os dias depois
+   * disso, entao o numero se firma sozinho conforme o mes anda.
+   */
+  if (emCurso && emCurso.elapsed >= 0.25 && emCurso.cents > 0) {
+    const anualizado = emCurso.cents / emCurso.elapsed
+    soma += anualizado * emCurso.elapsed
+    peso += emCurso.elapsed
+    curso = { anualizado: Math.round(anualizado), peso: emCurso.elapsed }
+  }
+
+  const nivel = peso > 0 ? Math.round(soma / peso) : p50_longo
+
+  const eventosHist = discretionaryHistory(txns, exclude, currentMonth, 12, 'so-evento')
+  const provisao_eventos = eventosHist.length
+    ? Math.round(eventosHist.reduce((a, b) => a + b, 0) / eventosHist.length)
+    : 0
+
+  return {
+    nivel,
+    d: { p10: Math.round(nivel * r10), p50: nivel, p90: Math.round(nivel * r90) },
+    provisao_eventos,
+    regime: {
+      p50_longo, p50_curto: nivel, meses_curto: recente.length, meses_nivel: NIVEL_MESES,
+      fechadas: recente.length
+        ? Math.round(recente.reduce((a, b) => a + b, 0) / recente.length) : p50_longo,
+      curso,
+      divergencia: p50_longo > 0 ? (nivel - p50_longo) / p50_longo : 0,
+      provisao_eventos, meses_evento: eventosHist.filter((x) => x > 0).length,
+      total_eventos: eventosHist.reduce((a, b) => a + b, 0),
+    },
+  }
+}
+
+const MIN_EVENTO_CENTS = 30000     // abaixo de R$ 300 nao vale a pergunta
+const MULT_EVENTO = 3              // 3x a mediana do proprio lojista
+const SOZINHO_CENTS = 70000        // lojista sem historico: R$ 700 e o corte
+
+/**
+ * Sugere quais lancamentos sao EVENTO, nao rotina.
+ *
+ * Duas reguas, porque os dois casos existem:
+ *   - lojista conhecido com valor fora de escala: a loja de conveniencia que
+ *     custa dezenas de reais num dia normal aparece uma vez com valor de festa.
+ *     Corte absoluto nao pega, porque o mesmo valor num supermercado e rotina.
+ *   - lojista que aparece uma vez so e caro (passagem aerea, loja de viagem).
+ *     Nao ha mediana pra comparar; ai o corte e absoluto.
+ *
+ * Sugere, nao decide. O mesmo valor e evento ou rotina dependendo do contexto —
+ * o dado nao distingue, voce distingue.
+ */
+export function detectEventCandidates(txns, config, exclude = []) {
+  const ex = new Set(exclude)
+  const decidido = config?.events ?? {}
+  const porLojista = new Map()
+  for (const t of txns) {
+    if (t.kind !== 'purchase' || t.igrp != null || !t.mkey || ex.has(t.mkey)) continue
+    if (!porLojista.has(t.mkey)) porLojista.set(t.mkey, [])
+    porLojista.get(t.mkey).push(t.cents)
+  }
+
+  const out = []
+  for (const t of txns) {
+    if (t.kind !== 'purchase' || t.igrp != null || !t.mkey || ex.has(t.mkey)) continue
+    if (t.cents < MIN_EVENTO_CENTS) continue
+    const k = eventKey(t)
+    if (decidido[k] !== undefined) continue          // ja respondido, sim ou nao
+
+    const vals = porLojista.get(t.mkey) ?? []
+    let motivo = null
+    if (vals.length >= 3) {
+      const med = pct([...vals].sort((a, b) => a - b), 0.5)
+      if (med > 0 && t.cents >= med * MULT_EVENTO) {
+        motivo = `${(t.cents / med).toFixed(1)}× a mediana do lojista (R$ ${Math.round(med / 100)})`
+      }
+    } else if (t.cents >= SOZINHO_CENTS) {
+      motivo = vals.length <= 1 ? 'compra única e alta' : 'lojista raro, valor alto'
+    }
+    if (motivo) {
+      out.push({ key: k, date: t.date, desc: t.desc, mkey: t.mkey, cents: t.cents, cat: t.cat, motivo })
+    }
+  }
+  return out.sort((a, b) => b.cents - a.cents || b.date.localeCompare(a.date))
 }
 
 /**
@@ -332,6 +511,159 @@ function dayCurve(txns, exclude, currentMonth) {
   let acc = 0
   for (let d = 1; d <= 31; d++) { acc += perDay[d]; cum[d] = acc / total }
   return cum
+}
+
+// ---------------------------------------------------------------- 4. meta
+
+const DIAS_CICLO = 30
+
+/**
+ * Meta do mes -> quanto ainda da pra gastar, e por dia.
+ *
+ * A conta e deliberadamente de SUBTRACAO, nao de projecao: parte do teto e tira
+ * o que ja esta comprometido. Projecao entra so como referencia ("no ritmo de
+ * hoje voce fecha em X"), nunca como o numero que manda.
+ *
+ *   teto_fatura  = meta do mes - fixos que nao passam no cartao
+ *   comprometido = o que ja esta na fatura + recorrente que ainda vai postar
+ *   disponivel   = teto - comprometido        <- isto e o que sobra pro dia a dia
+ *   por_dia      = disponivel / dias que faltam do ciclo
+ *
+ * Por que por_dia e o numero de capa: "gastei 68% da meta" nao diz o que fazer
+ * hoje. "R$ 115 por dia ate o fechamento" diz.
+ *
+ * IMPORTANTE, e a razao de nao existir projecao por categoria aqui: com ~9
+ * lancamentos de Alimentacao em 14 dias e 63% do valor concentrado em 3 deles,
+ * extrapolar a categoria multiplica ruido. Medido no historico, a mesma conta
+ * variava ~30% pra mesma categoria dependendo da curva usada, enquanto o
+ * VARIAVEL AGREGADO ficou estavel entre meses (~3%). Entao: agrega-se pra projetar,
+ * detalha-se por categoria so pra medir consumo contra a meta.
+ */
+function goalView({ config, elapsed_share, fixed_outflow_cents, ja_na_fatura_cents,
+                    a_entrar_cents, variavelTxns, todayISO }) {
+  const meta = config?.budget
+  if (!meta?.total_cents) return null
+
+  const teto_fatura_cents = meta.total_cents - fixed_outflow_cents
+
+  /*
+   * Evento sai do RITMO mas fica no gasto.
+   *
+   * Um jantar caro num dia 11 nao significa que voce gasta aquilo por dia — mas
+   * o dinheiro saiu e reduz o que sobra. Entao ele entra em `ja_na_fatura`
+   * (logo, no disponivel) e fica de fora da divisao que produz o R$/dia.
+   */
+  const eventos_cents = variavelTxns.filter((t) => t.event)
+    .reduce((a, t) => a + outflow(t.kind, t.cents), 0)
+  const rotinaTxns = variavelTxns.filter((t) => !t.event)
+  const variavel_cents = rotinaTxns.reduce((a, t) => a + outflow(t.kind, t.cents), 0)
+
+  /*
+   * O extrato ATRASA. O Itau exporta a fatura aberta com lancamentos ate uns 3-5
+   * dias atras; o que voce gastou ontem ainda nao esta la. Isso cria dois vieses
+   * em direcoes opostas, e os dois precisam de denominadores diferentes:
+   *
+   *   ritmo  -> divide pelos dias COM DADO. Dividir pelos dias corridos joga
+   *             gasto de 14 dias sobre 18 e subestima o ritmo em ~22%.
+   *   sobra  -> desconta o que provavelmente ja foi gasto e ainda nao postou.
+   *             Sem isso o app anuncia folga que nao existe, todo dia.
+   */
+  const datas = rotinaTxns.map((t) => t.date).filter(Boolean).sort()
+  const inicio = datas[0]
+  const ultimo = datas[datas.length - 1]
+  const dias = (a, b) => Math.round((Date.parse(`${b}T00:00:00`) - Date.parse(`${a}T00:00:00`)) / 86400000)
+
+  const dias_corridos = Math.min(DIAS_CICLO, Math.max(1, Math.round(elapsed_share * DIAS_CICLO)))
+  const dias_com_dado = inicio && ultimo ? Math.max(1, dias(inicio, ultimo) + 1) : dias_corridos
+  const dias_sem_dado = Math.max(0, dias_corridos - dias_com_dado)
+  // +1: hoje ainda conta como dia de gasto — e evita divisao por zero no ultimo dia
+  const dias_restantes = Math.max(1, DIAS_CICLO - dias_corridos + 1)
+
+  const ritmo_cents = Math.round(variavel_cents / dias_com_dado)
+  const nao_postado_cents = ritmo_cents * dias_sem_dado
+  const disponivel_cents = teto_fatura_cents - ja_na_fatura_cents - a_entrar_cents - nao_postado_cents
+  const comprometido_cents = ja_na_fatura_cents + a_entrar_cents + nao_postado_cents
+  const por_dia_cents = Math.round(disponivel_cents / dias_restantes)
+
+  // se mantiver o ritmo atual ate o fim: projeta o buraco do atraso + o futuro
+  const no_ritmo_cents = ja_na_fatura_cents + a_entrar_cents + fixed_outflow_cents
+    + ritmo_cents * (DIAS_CICLO - dias_com_dado)
+
+  const porCat = new Map()
+  for (const t of variavelTxns) {
+    const c = t.cat || 'Sem categoria'
+    const g = porCat.get(c) ?? { cents: 0, n: 0 }
+    g.cents += outflow(t.kind, t.cents); g.n++
+    porCat.set(c, g)
+  }
+  const metasCat = meta.categories ?? {}
+  const categorias = [...new Set([...porCat.keys(), ...Object.keys(metasCat)])]
+    .map((cat) => {
+      const g = porCat.get(cat) ?? { cents: 0, n: 0 }
+      const consumido_cents = g.cents
+      const meta_cents = metasCat[cat] ?? null
+      const share = meta_cents ? consumido_cents / meta_cents : null
+      /*
+       * Projecao da categoria = consumido / fracao decorrida. Util pra ver de
+       * onde vem o estouro, mas RUIDOSA: uma categoria com 9 lancamentos em 14
+       * dias e 63% do valor em 3 deles ja projetou uma faixa de 30% pra mesma
+       * quinzena dependendo da curva usada. Por isso vem com `confiavel`:
+       * abaixo de 8 lancamentos o numero e indicacao, nao previsao — e a
+       * projecao do TOTAL continua saindo do agregado, nunca da soma destes.
+       */
+      const projetado_cents = elapsed_share > 0
+        ? Math.round(consumido_cents / elapsed_share) : consumido_cents
+      return {
+        cat,
+        meta_cents,
+        consumido_cents,
+        n: g.n,
+        projetado_cents,
+        confiavel: g.n >= 8,
+        // positivo = vai estourar a meta da categoria
+        distancia_cents: meta_cents == null ? null : projetado_cents - meta_cents,
+        restante_cents: meta_cents == null ? null : meta_cents - consumido_cents,
+        share,
+        /*
+         * O sinal nao e "passou de 100%", e "passou na frente do calendario":
+         * 60% da meta consumida com 46% do ciclo decorrido ja e alerta, mesmo
+         * longe do teto. Comparar contra elapsed_share e o que torna a regua
+         * util no meio do mes em vez de so no fim.
+         */
+        adiantado: share == null ? null : share - elapsed_share,
+        por_dia_cents: meta_cents == null
+          ? null
+          : Math.round((meta_cents - consumido_cents) / dias_restantes),
+      }
+    })
+    .sort((a, b) => b.consumido_cents - a.consumido_cents)
+
+  return {
+    meta_total_cents: meta.total_cents,
+    teto_fatura_cents, comprometido_cents, disponivel_cents,
+    dias_ciclo: DIAS_CICLO, dias_corridos, dias_restantes, dias_com_dado, dias_sem_dado,
+    nao_postado_cents, eventos_cents,
+    variavel_cents, ritmo_cents, por_dia_cents, no_ritmo_cents,
+    distancia_cents: no_ritmo_cents - meta.total_cents,
+    categorias,
+    sem_meta_cents: categorias
+      .filter((c) => c.meta_cents == null)
+      .reduce((a, c) => a + c.consumido_cents, 0),
+    /*
+     * De onde vem a distancia ate a meta, em tres pedacos que somam.
+     *
+     * O travado (parcela + recorrente + fixo fora) e o piso: ele consome a meta
+     * antes de voce decidir qualquer coisa. O que sobra e o teto do variavel —
+     * e so contra ESSE numero faz sentido comparar as metas por categoria.
+     */
+    decomposicao: {
+      travado_cents: comprometido_cents - variavel_cents - eventos_cents,
+      teto_variavel_cents: meta.total_cents
+        - (comprometido_cents - variavel_cents - eventos_cents),
+      variavel_projetado_cents: variavel_cents + ritmo_cents * (DIAS_CICLO - dias_com_dado),
+      eventos_cents,
+    },
+  }
 }
 
 // ---------------------------------------------------------------- visao do mes
@@ -392,9 +724,11 @@ export function monthView(ds, todayISO) {
   const exSet = new Set([...exclude, ...fixedNoCartao.map((r) => r.key).filter(Boolean)])
   const excludeTudo = [...exSet]
 
-  const hist = discretionaryHistory(txns, excludeTudo, month)
-  const sorted = [...hist].sort((a, b) => a - b)
-  const baseline_cents = Math.round(pct(sorted, 0.5))
+  /*
+   * MESMA base do fluxo de caixa. Antes daqui saia a mediana de 12 meses e de
+   * la o nivel de 2 — o mesmo gasto variavel com dois valores, e o mes seguinte
+   * aparecendo maior que o atual sem nenhuma razao economica.
+   */
 
   /*
    * Se a fatura em formacao ja foi importada (o Itau exporta a fatura ABERTA),
@@ -405,9 +739,10 @@ export function monthView(ds, todayISO) {
   const naFaturaAberta = txns.filter((t) => t.cash === fatura_alvo && t.source === 'import')
   const temFaturaAberta = naFaturaAberta.length > 0
 
-  const realizado_cents = naFaturaAberta
-    .filter((t) => t.igrp == null && !exSet.has(t.mkey))
-    .reduce((a, t) => a + outflow(t.kind, t.cents), 0)
+  // gasto VARIAVEL do ciclo: nem parcela, nem recorrente. E a unica parte que
+  // responde ao que voce faz hoje — e por isso a unica que a meta diaria governa.
+  const variavelNaFatura = naFaturaAberta.filter((t) => t.igrp == null && !exSet.has(t.mkey))
+  const realizado_cents = variavelNaFatura.reduce((a, t) => a + outflow(t.kind, t.cents), 0)
 
   const loggedTxns = txns.filter((t) => t.source === 'manual' && t.date.slice(0, 7) === month)
   const manual_cents = loggedTxns.reduce((a, t) => a + outflow(t.kind, t.cents), 0)
@@ -440,8 +775,28 @@ export function monthView(ds, todayISO) {
   }
   const left = Math.max(0, 1 - elapsed_share)
 
-  const band = (p) => Math.round(pct(sorted, p) * left)
-  const remaining = { p10: band(0.10), p50: band(0.50), p90: band(0.90) }
+  /*
+   * O ciclo em curso entra no NIVEL, com peso proporcional ao que ja se viu.
+   *
+   * Antes o nivel vinha so das 2 faturas fechadas, e a economia comecada agora
+   * so apareceria na projecao dois meses depois — o painel mostrava o
+   * comportamento antigo enquanto o novo ja estava acontecendo. Agora o mes
+   * parcial e anualizado (gasto / fracao decorrida) e entra como uma observacao
+   * de peso `elapsed`: com 60% do ciclo visto, vale 0,6 mes contra 1,0 de cada
+   * fatura fechada. Peso proporcional a informacao, nao a vontade de acreditar.
+   */
+  const emCurso = { cents: realizado_cents + manual_cents, elapsed: elapsed_share }
+  const nivelInfo = variableLevel(txns, excludeTudo, fatura_alvo, emCurso)
+  const baseline_cents = nivelInfo.nivel
+
+  // o que falta do ciclo = nivel x fatia restante. Provisao de evento NAO entra:
+  // no mes corrente o evento ou ja aconteceu (esta no realizado) ou nao vai
+  // acontecer — projetar "meia festa" no meio do mes nao ajuda ninguem.
+  const remaining = {
+    p10: Math.round(nivelInfo.d.p10 * left),
+    p50: Math.round(nivelInfo.d.p50 * left),
+    p90: Math.round(nivelInfo.d.p90 * left),
+  }
 
   /*
    * Duas totalizacoes diferentes, e misturar as duas engana:
@@ -469,15 +824,16 @@ export function monthView(ds, todayISO) {
   const recorrentesCartao = [...detected, ...fixedNoCartao]
   let ja_na_fatura_cents
   let a_entrar_cents
+  let a_entrar_itens = []
   if (temFaturaAberta) {
     ja_na_fatura_cents = naFaturaAberta.reduce((a, t) => a + outflow(t.kind, t.cents), 0) + manual_cents
     const jaPostou = new Set(naFaturaAberta.map((t) => t.mkey))
-    a_entrar_cents = recorrentesCartao
-      .filter((s) => s.key && !jaPostou.has(s.key))
-      .reduce((a, s) => a + s.cents, 0)
+    a_entrar_itens = recorrentesCartao.filter((s) => s.key && !jaPostou.has(s.key))
+    a_entrar_cents = a_entrar_itens.reduce((a, s) => a + s.cents, 0)
   } else {
     // sem fatura aberta, tudo e projecao: parcelas + recorrentes + o que voce lancou
     ja_na_fatura_cents = installments_cents + manual_cents
+    a_entrar_itens = recorrentesCartao
     a_entrar_cents = subscriptions_cents + fixed_card_cents
   }
 
@@ -505,8 +861,68 @@ export function monthView(ds, todayISO) {
     realizado_cents, manual_cents, tem_fatura_aberta: temFaturaAberta,
     remaining, fatura, total, income_cents, fixed_outflow_cents, fixed_card_cents, net,
     ja_na_fatura_cents, a_entrar_cents,
-    baseline_cents, last_statement: last, fatura_alvo,
+    baseline_cents, last_statement: last, fatura_alvo, em_curso: emCurso,
+    nivel_regime: nivelInfo.regime, a_entrar_itens,
+
+    /*
+     * O QUE AINDA VAI ENTRAR, aberto por categoria.
+     *
+     * O KPI somava tudo sem dizer de onde vinha, e as duas metades tem
+     * naturezas opostas — misturar as duas num numero so esconde justamente o
+     * que da pra agir:
+     *
+     *   fixo     recorrente que ainda nao postou neste ciclo. E NOMEAVEL: da pra
+     *            listar item a item e a data e quase certa. Nao ha o que decidir.
+     *   variavel o resto do ciclo. Este e o unico pedaco que responde ao que
+     *            voce fizer amanha.
+     *
+     * O rateio do variavel por categoria e proporcional ao que ja se gastou no
+     * proprio ciclo — nao e projecao por categoria (que ja provou ser ruido com
+     * poucos lancamentos), e sim a distribuicao observada aplicada ao total
+     * agregado, que e o unico numero em que confio.
+     */
+    falta_por_categoria: (() => {
+      const porCat = new Map()
+      const add = (cat, campo, cents) => {
+        const c = cat || 'Sem categoria'
+        const g = porCat.get(c) ?? { cat: c, fixo_cents: 0, variavel_cents: 0 }
+        g[campo] += cents
+        porCat.set(c, g)
+      }
+      for (const s of a_entrar_itens) add(s.category, 'fixo_cents', s.cents)
+
+      const gastoCat = new Map()
+      let base = 0
+      for (const t of [...variavelNaFatura, ...loggedTxns]) {
+        if (t.event) continue // evento nao se repete: nao serve de peso pro resto
+        const c = t.cat || 'Sem categoria'
+        const v = outflow(t.kind, t.cents)
+        gastoCat.set(c, (gastoCat.get(c) ?? 0) + v)
+        base += v
+      }
+      if (base > 0) {
+        for (const [c, v] of gastoCat) add(c, 'variavel_cents', Math.round(remaining.p50 * (v / base)))
+      } else if (remaining.p50 > 0) {
+        add('Sem categoria', 'variavel_cents', remaining.p50)
+      }
+      return [...porCat.values()]
+        .map((g) => ({ ...g, total_cents: g.fixo_cents + g.variavel_cents }))
+        .filter((g) => g.total_cents !== 0)
+        .sort((a, b) => b.total_cents - a.total_cents)
+    })(),
+    goal: goalView({
+      config, elapsed_share, fixed_outflow_cents, ja_na_fatura_cents, a_entrar_cents,
+      variavelTxns: [...variavelNaFatura, ...loggedTxns], todayISO,
+    }),
     candidates: detectCandidates(txns, last, config),
+    /*
+     * Janela de 12 meses, a MESMA que alimenta a provisao no fluxo de caixa.
+     * Com 6, uma viagem do inicio da janela nunca aparecia pra ser marcada — mas
+     * continuava dentro da janela da provisao, inflando o nivel sem correcao.
+     */
+    eventCandidates: detectEventCandidates(
+      txns.filter((t) => t.cash >= monthAdd(month, -11)), config, excludeTudo
+    ).slice(0, 10),
     /*
      * Recorrente confirmado que NAO aparece mais nas ultimas faturas.
      *
@@ -515,18 +931,76 @@ export function monthView(ds, todayISO) {
      * vira custo fantasma travado e o novo entra no variavel — o mesmo gasto
      * contado duas vezes, e por isso o mes parece maior do que e.
      */
+    /*
+     * Lancamento manual que a fatura ja trouxe.
+     *
+     * O `reconcile` do import so casa quando o LOJISTA e parecido — e no
+     * lancamento manual o nome quase nunca bate: voce digita o app de entrega
+     * e o extrato traz o restaurante. Resultado: centenas de reais contados
+     * duas vezes, e invisiveis.
+     *
+     * Aqui a regra e outra de proposito: valor EXATO + ate 3 dias, sem exigir
+     * lojista. Dois gastos de valor identico no mesmo dia sao quase certamente
+     * o mesmo. Mas "quase" nao apaga nada sozinho — a lista aparece pra voce
+     * decidir, que e a mesma politica do resto do app.
+     */
+    duplicados: (() => {
+      if (!temFaturaAberta) return []
+      const usados = new Set()
+      const out = []
+      for (const m of loggedTxns) {
+        const i = naFaturaAberta.findIndex((t, idx) => {
+          if (usados.has(idx) || t.kind !== 'purchase' || t.cents !== m.cents) return false
+          const dd = Math.abs(Math.round(
+            (Date.parse(`${t.date}T00:00:00`) - Date.parse(`${m.date}T00:00:00`)) / 86400000))
+          return dd <= 3
+        })
+        if (i >= 0) { usados.add(i); out.push({ manual: m, fatura: naFaturaAberta[i] }) }
+      }
+      return out
+    })(),
+
+    /*
+     * Recorrente confirmado que sumiu — E o provavel substituto.
+     *
+     * Quase sempre o lojista so trocou de nome no extrato (a empresa mudou a
+     * razao social). A despesa nao acabou; a CHAVE mudou. Mas o conserto era de
+     * dois passos — remover aqui, confirmar o novo no card de candidatos — e
+     * parar no primeiro passo apaga uma assinatura que continua sendo cobrada. Entao o substituto e procurado aqui: mesmo valor (+-15%) na
+     * janela recente, ainda nao declarado. Com ele, a migracao vira um clique.
+     */
     sumidos: (() => {
       if (!last) return []
       const janela = new Set([last, monthAdd(last, -1), monthAdd(last, -2)])
-      const vistos = new Set(txns.filter((t) => janela.has(t.cash)).map((t) => t.mkey))
-      return fixedNoCartao.filter((s) => s.key && !vistos.has(s.key))
+      const recentes = txns.filter((t) => janela.has(t.cash) && t.kind === 'purchase' && t.igrp == null)
+      const vistos = new Set(recentes.map((t) => t.mkey))
+      const declarados = new Set(fixed.map((r) => r.key).filter(Boolean))
+
+      // candidato a substituto: lojista novo, valor parecido, aparece mais de uma vez
+      const porChave = new Map()
+      for (const t of recentes) {
+        if (declarados.has(t.mkey)) continue
+        const g = porChave.get(t.mkey) ?? { key: t.mkey, label: t.desc, vals: [], meses: new Set() }
+        g.vals.push(t.cents); g.meses.add(t.cash); porChave.set(t.mkey, g)
+      }
+
+      return fixedNoCartao.filter((s) => s.key && !vistos.has(s.key)).map((s) => {
+        let sucessor = null
+        for (const g of porChave.values()) {
+          const med = pct([...g.vals].sort((a, b) => a - b), 0.5)
+          if (!med || Math.abs(med - s.cents) / s.cents > 0.15) continue
+          if (sucessor && g.meses.size <= sucessor.meses) continue
+          sucessor = { key: g.key, label: g.label, cents: Math.round(med), meses: g.meses.size }
+        }
+        return { ...s, sucessor }
+      })
     })(),
   }
 }
 
 // ---------------------------------------------------------------- fluxo de caixa
 
-export function cashflow(ds, fromMonth, horizon = 12, openingCents = 0) {
+export function cashflow(ds, fromMonth, horizon = 12, openingCents = 0, todayISO = null) {
   const { ledger, config, manual = [], statements = [] } = ds ?? {}
   const txns = hydrate(ledger, manual, statements, config)
   const last = [ledger?.last_statement, ...statements.map((s) => s.ref)]
@@ -534,34 +1008,104 @@ export function cashflow(ds, fromMonth, horizon = 12, openingCents = 0) {
     .sort()
     .pop() ?? null
   const detected = detectSubscriptions(txns, last)
-  const exclude = detected.map((s) => s.key)
+  const fixedAll = declaredRecurring(config, 'outflow')
+
+  /*
+   * Mesma exclusao do monthView, e pela mesma razao.
+   *
+   * Contava-se aqui so os DETECTADOS. O recorrente confirmado na mao que passa
+   * no cartao entrava em `fixed` E continuava dentro da mediana do variavel —
+   * a mesma assinatura cobrada duas vezes, todo mes do horizonte.
+   */
+  const exclude = [...new Set([
+    ...detected.map((s) => s.key),
+    ...fixedAll.map((r) => r.key).filter(Boolean),
+  ])]
   const subs = detected.reduce((a, s) => a + s.cents, 0)
-  const fixed = declaredRecurring(config, 'outflow').reduce((a, s) => a + s.cents, 0)
+  const fixed = fixedAll.reduce((a, s) => a + s.cents, 0)
   const income = declaredRecurring(config, 'inflow').reduce((a, s) => a + s.cents, 0)
 
-  const sorted = [...discretionaryHistory(txns, exclude, fromMonth)].sort((a, b) => a - b)
-  const d = {
-    p10: Math.round(pct(sorted, 0.10)),
-    p50: Math.round(pct(sorted, 0.50)),
-    p90: Math.round(pct(sorted, 0.90)),
+  /*
+   * NIVEL vem das ultimas 2 faturas; DISPERSAO vem dos 12 meses.
+   *
+   * A mediana de 12 meses demora um ANO pra enxergar mudanca de padrao. Caso
+   * tipico: uma assinatura cara sai do cartao e o gasto cai de uma vez — a
+   * mediana longa so refletiria isso um ano depois, projetando ate la um custo
+   * que nao existe mais.
+   *
+   * Mas 2 meses nao dao banda: com duas observacoes, p10 e p90 sao os proprios
+   * dois numeros, e a faixa vira ruido. Entao separa-se o que cada janela sabe
+   * fazer — a curta diz ONDE esta o nivel, a longa diz QUANTO ele costuma
+   * variar — e a razao p10/p50 e p90/p50 da longa e aplicada sobre o nivel novo.
+   */
+  /*
+   * monthView PRIMEIRO, porque o nivel depende do ciclo em curso.
+   *
+   * As duas abas tem que sair da MESMA base: quando o mes corrente projetava
+   * pela mediana longa e o fluxo pelas 2 ultimas faturas, novembro aparecia
+   * maior que setembro sem nenhuma razao economica.
+   */
+  let mv = null
+  if (todayISO) {
+    try { mv = monthView(ds, todayISO) } catch { mv = null }
   }
+  const { d, provisao_eventos, regime } = variableLevel(txns, exclude, fromMonth, mv?.em_curso)
 
+  /*
+   * Evento vira PROVISAO, nao desaparece.
+   *
+   * Uma viagem ou uma festa sao gasto real — sumir com elas faria a projecao
+   * mentir pra baixo. Mas elas tambem nao acontecem todo mes: dentro do nivel,
+   * uma festa de quatro digitos vira previsao de festa mensal.
+   *
+   * Entao saem do nivel (que responde "quanto custa um mes normal") e voltam
+   * como media dos ultimos 12 meses (que responde "quanto custam os anormais,
+   * diluido"). A soma das duas e o gasto esperado; a separacao e o que deixa a
+   * meta diaria fazer sentido.
+   */
+
+  /*
+   * O primeiro mes nao e uma previsao — e quase um fato.
+   *
+   * Ele e a fatura que esta em formacao AGORA: metade dela ja esta lancada e as
+   * parcelas estao todas conhecidas. Projeta-lo pela mediana de 12 meses, como
+   * se nada se soubesse, dava quase 20% a mais do que o mes corrente mostra na
+   * outra aba — o mesmo mes com dois numeros diferentes, e o usuario sem saber
+   * em qual acreditar. Aqui o mes 1 passa a herdar o numero do
+   * monthView; os seguintes seguem estatisticos.
+   */
   const out = []
   let b10 = openingCents, b50 = openingCents, b90 = openingCents
   for (let k = 0; k < horizon; k++) {
     const m = monthAdd(fromMonth, k)
     const inst = installmentsDue(txns, last, m).reduce((a, i) => a + i.cents, 0)
     const rec = subs + fixed
+    const ancorado = k === 0 && mv && mv.fatura_alvo === m
+
+    // com ancora, o gasto do mes e o total do monthView; sem, e a soma dos
+    // blocos + a provisao de evento (que no mes ancorado ja esta no realizado)
+    const gasto = ancorado
+      ? { p10: mv.total.p10, p50: mv.total.p50, p90: mv.total.p90 }
+      : {
+          p10: inst + rec + d.p10 + provisao_eventos,
+          p50: inst + rec + d.p50 + provisao_eventos,
+          p90: inst + rec + d.p90 + provisao_eventos,
+        }
+
     const net = {
-      p10: income - (inst + rec + d.p90),
-      p50: income - (inst + rec + d.p50),
-      p90: income - (inst + rec + d.p10),
+      p10: income - gasto.p90,
+      p50: income - gasto.p50,
+      p90: income - gasto.p10,
     }
     // a banda do SALDO abre com o tempo: empilha meses ruins em sequencia
     b10 += net.p10; b50 += net.p50; b90 += net.p90
     out.push({
       month: m, installments_cents: inst, recurring_cents: rec,
-      discretionary: d, income_cents: income, net,
+      // no mes ancorado o "variavel" e o residuo, pra linha continuar somando
+      discretionary: ancorado
+        ? { p10: gasto.p10 - inst - rec, p50: gasto.p50 - inst - rec, p90: gasto.p90 - inst - rec }
+        : d,
+      gasto, ancorado, income_cents: income, net, regime,
       balance: { p10: b10, p50: b50, p90: b90 },
     })
   }

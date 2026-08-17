@@ -82,7 +82,9 @@ export function useCashflow(horizon = 12, openingCents = 0) {
   let calcError = null
   if (q.data) {
     try {
-      data = cashflow(q.data, from, horizon, openingCents)
+      // passa o hoje pra ancorar o 1o mes no monthView — sem isso as duas abas
+      // dao numeros diferentes pro mesmo mes
+      data = cashflow(q.data, from, horizon, openingCents, todayISO())
     } catch (e) {
       calcError = e instanceof Error ? e : new Error(String(e))
     }
@@ -226,8 +228,39 @@ function saveConfig(mutate, message) {
     cfg.recurring ??= []
     cfg.memory ??= {}
     cfg.rules ??= []
+    cfg.budget ??= { total_cents: 0, categories: {} }
+    cfg.events ??= {}
     mutate(cfg)
   }, message, { recurring: [], rules: [], memory: {} })
+}
+
+/**
+ * Marca (1) ou descarta (0) um lançamento como evento.
+ *
+ * Grava o 0 em vez de simplesmente não gravar nada: sem isso o mesmo gasto
+ * volta a ser sugerido em toda abertura do app, e a lista nunca esvazia.
+ */
+export function useMarkEvent() {
+  return useDatasetMutation(({ key, isEvent, label }) =>
+    saveConfig((cfg) => {
+      cfg.events[key] = isEvent ? 1 : 0
+    }, `${isEvent ? 'evento' : 'não é evento'}: ${label ?? key}`)
+  )
+}
+
+/**
+ * Meta do mes. `categories` e substituido inteiro, nao mesclado: apagar a meta
+ * de uma categoria e uma acao valida, e um merge tornaria isso impossivel.
+ */
+export function useSetBudget() {
+  return useDatasetMutation(({ total_cents, categories }) =>
+    saveConfig((cfg) => {
+      cfg.budget = {
+        total_cents: Math.max(0, Math.round(total_cents ?? 0)),
+        categories: categories ?? cfg.budget?.categories ?? {},
+      }
+    }, `meta do mês: ${((total_cents ?? 0) / 100).toFixed(2)}`)
+  )
 }
 
 export function useConfirmRecurring() {

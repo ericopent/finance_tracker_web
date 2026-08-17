@@ -1,12 +1,13 @@
 import { useState } from 'react'
 import clsx from 'clsx'
-import { Trash2, Lock, Repeat, PencilLine, TrendingUp, Check, X, HelpCircle, Loader2, AlertTriangle } from 'lucide-react'
+import { Trash2, Lock, Repeat, PencilLine, TrendingUp, Check, X, HelpCircle, Loader2, AlertTriangle, PartyPopper, ChevronDown, ChevronUp } from 'lucide-react'
 import PageHeader from '../components/PageHeader'
 import KpiGrid from '../components/KpiGrid'
 import GapTable from '../components/GapTable'
 import QuickEntry from '../components/QuickEntry'
+import MetaCard from '../components/MetaCard'
 
-import { useMonthView, useDeleteTxn, useConfirmRecurring, useDismissRecurring, useRemoveRecurring } from '../lib/api'
+import { useMonthView, useDeleteTxn, useConfirmRecurring, useDismissRecurring, useRemoveRecurring, useMarkEvent } from '../lib/api'
 import { clearAuth } from '../lib/github'
 import { GAP, money, moneyShort, moneySigned, monthLabel, brNum } from '../theme/gap'
 
@@ -193,38 +194,302 @@ function Candidatos({ itens }) {
  */
 function Sumidos({ itens }) {
   const rm = useRemoveRecurring()
+  const ok = useConfirmRecurring()
   const [busy, setBusy] = useState(null)
   if (!itens?.length) return null
   const total = itens.reduce((a, s) => a + s.cents, 0)
+
+  /*
+   * Migrar = remover o nome velho E confirmar o novo, nos dois passos.
+   *
+   * Antes eram duas acoes em dois cards diferentes, e parar no primeiro passo
+   * APAGA uma despesa que continua sendo cobrada — o erro oposto, e pior,
+   * porque o mes passa a parecer mais barato do que e.
+   */
+  const migrar = async (s) => {
+    setBusy(s.key)
+    try {
+      await ok.mutateAsync({
+        label: s.sucessor.label, key: s.sucessor.key,
+        cents: s.sucessor.cents, category: s.category ?? null,
+      })
+      await rm.mutateAsync(s.key)
+    } catch { /* mostrado abaixo */ } finally { setBusy(null) }
+  }
+
   return (
     <div className="gap-card p-3.5 border-l-4 border-l-gap-red">
       <div className="text-[12px] font-semibold text-gap-navy mb-1 flex items-center gap-1.5">
         <AlertTriangle size={13} className="text-gap-red" />
-        Cobrando {money(total)} que não aparece mais
+        {money(total)} contado duas vezes — o lojista mudou de nome
       </div>
       <div className="text-[11px] text-gap-muted mb-2.5">
-        Confirmado como recorrente, mas ausente das últimas 3 faturas — normalmente
-        o lojista mudou de nome. Enquanto ficar aqui, conta em dobro: fantasma no
-        travado e real no variável. Remova e confirme o nome novo na lista acima.
+        A despesa continua existindo; o que mudou foi o nome no extrato. Enquanto
+        as duas versões coexistirem, ela conta em dobro — fantasma no travado e
+        real no variável. <b>Migrar</b> troca o nome sem apagar a despesa.
       </div>
       <div className="flex flex-col gap-1.5">
         {itens.map((s) => (
-          <div key={s.key} className="flex items-center gap-2 text-[12.5px] border border-gap-border rounded-md px-2.5 py-1.5">
-            <span className="truncate flex-1" title={s.label}>{s.label}</span>
-            <span className="num font-semibold whitespace-nowrap">{money(s.cents)}</span>
-            <button
-              className="text-gap-red hover:bg-gap-red/10 rounded p-2 -m-0.5 transition-colors disabled:opacity-40"
-              disabled={busy === s.key} aria-label={`remover ${s.label}`}
-              onClick={async () => { setBusy(s.key); try { await rm.mutateAsync(s.key) } catch {} finally { setBusy(null) } }}
+          <div key={s.key} className="flex flex-col gap-1 text-[12.5px] border border-gap-border rounded-md px-2.5 py-1.5">
+            <div className="flex items-center gap-2">
+              <span className="truncate flex-1" title={s.label}>{s.label}</span>
+              <span className="num font-semibold whitespace-nowrap">{money(s.cents)}</span>
+              {busy === s.key ? (
+                <Loader2 size={15} className="animate-spin text-gap-blue shrink-0" />
+              ) : (
+                <>
+                  {s.sucessor && (
+                    <button
+                      className="gap-btn !py-1 !px-2 !text-[11px] shrink-0"
+                      onClick={() => migrar(s)} disabled={!!busy}
+                    >Migrar</button>
+                  )}
+                  <button
+                    className="text-gap-muted hover:text-gap-red hover:bg-gap-red/10 rounded p-2 -m-0.5 disabled:opacity-40"
+                    disabled={!!busy} aria-label={`remover ${s.label}`}
+                    title="acabou de vez — remover"
+                    onClick={async () => { setBusy(s.key); try { await rm.mutateAsync(s.key) } catch {} finally { setBusy(null) } }}
+                  ><Trash2 size={15} /></button>
+                </>
+              )}
+            </div>
+            {s.sucessor ? (
+              <div className="text-[10.5px] text-gap-muted">
+                virou <b className="text-gap-navy">{s.sucessor.label}</b> ({money(s.sucessor.cents)},
+                em {s.sucessor.meses} das últimas 3 faturas)
+              </div>
+            ) : (
+              <div className="text-[10.5px] text-gap-muted">
+                não achei substituto com valor parecido — se a despesa acabou mesmo, remova
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+      {(rm.error || ok.error) && (
+        <div className="mt-2 text-[12px] text-gap-red whitespace-pre-line">
+          {String((rm.error ?? ok.error).message ?? (rm.error ?? ok.error))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/**
+ * Gasto que parece evento, nao rotina.
+ *
+ * Sem essa marca, uma festa entra na base e vira previsao de festa TODO mes —
+ * chegou a esconder, por coincidencia, um corte grande feito em outra linha. Confirmado, o gasto continua contando no saldo e na fatura (o
+ * dinheiro saiu), mas sai do nivel que projeta os meses a frente.
+ */
+function Eventos({ itens }) {
+  const mark = useMarkEvent()
+  const [busy, setBusy] = useState(null)
+  if (!itens?.length) return null
+
+  const agir = async (it, isEvent) => {
+    setBusy(it.key)
+    try { await mark.mutateAsync({ key: it.key, isEvent, label: it.desc }) } catch {}
+    finally { setBusy(null) }
+  }
+
+  return (
+    <div className="gap-card p-3.5 border-l-4 border-l-[#8b5cf6]">
+      <div className="text-[12px] font-semibold text-gap-navy mb-1 flex items-center gap-1.5">
+        <PartyPopper size={13} className="text-[#8b5cf6]" />
+        Isso foi evento?
+      </div>
+      <div className="text-[11px] text-gap-muted mb-2.5">
+        Gasto fora de escala pro padrão do lojista. Marcando como evento, ele continua
+        no saldo e na fatura — mas para de virar previsão mensal.
+      </div>
+      <div className="flex flex-col gap-1.5">
+        {itens.map((c) => {
+          const gravando = busy === c.key
+          return (
+            <div
+              key={c.key}
+              className={clsx(
+                'flex items-center gap-2 text-[12.5px] border border-gap-border rounded-md px-2.5 py-1.5',
+                gravando && 'opacity-50'
+              )}
             >
-              {busy === s.key ? <Loader2 size={15} className="animate-spin" /> : <Trash2 size={15} />}
+              <span className="text-gap-muted text-[11px] w-[38px] shrink-0 num">
+                {c.date.slice(8, 10)}/{c.date.slice(5, 7)}
+              </span>
+              <span className="truncate flex-1" title={c.desc}>{c.desc}</span>
+              <span className="hidden sm:inline text-gap-muted text-[10.5px] whitespace-nowrap">
+                {c.motivo}
+              </span>
+              <span className="num font-semibold whitespace-nowrap">{money(c.cents)}</span>
+              {gravando ? (
+                <Loader2 size={15} className="animate-spin text-gap-blue shrink-0" />
+              ) : (
+                <>
+                  <button
+                    className="text-[#8b5cf6] hover:bg-[#8b5cf6]/10 rounded p-2 -m-0.5 disabled:opacity-40"
+                    title="foi evento" aria-label={`marcar ${c.desc} como evento`}
+                    disabled={!!busy} onClick={() => agir(c, true)}
+                  ><Check size={15} /></button>
+                  <button
+                    className="text-gap-muted hover:text-gap-red hover:bg-gap-red/10 rounded p-2 -m-0.5 disabled:opacity-40"
+                    title="é rotina — parar de sugerir" aria-label={`dispensar ${c.desc}`}
+                    disabled={!!busy} onClick={() => agir(c, false)}
+                  ><X size={15} /></button>
+                </>
+              )}
+            </div>
+          )
+        })}
+      </div>
+      {mark.error && (
+        <div className="mt-2 text-[12px] text-gap-red whitespace-pre-line">
+          {String(mark.error.message ?? mark.error)}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/**
+ * O que ainda vai entrar na fatura, aberto.
+ *
+ * Duas naturezas, separadas de proposito: o fixo e nomeavel item a item (uma
+ * assinatura que cai no dia 26 nao tem o que decidir) e o variavel e o unico
+ * pedaco que responde ao que voce fizer amanha. Somados num numero so, o KPI
+ * escondia qual metade da pra agir.
+ */
+function AindaEntra({ v }) {
+  const [aberto, setAberto] = useState(false)
+  const linhas = v.falta_por_categoria ?? []
+  if (!linhas.length) return null
+  const fixo = linhas.reduce((a, l) => a + l.fixo_cents, 0)
+  const varia = linhas.reduce((a, l) => a + l.variavel_cents, 0)
+  const max = Math.max(...linhas.map((l) => l.total_cents), 1)
+
+  return (
+    <div className="gap-card p-3.5">
+      <button
+        className="w-full flex items-center gap-1.5 text-left"
+        onClick={() => setAberto((x) => !x)}
+      >
+        <TrendingUp size={13} className="text-gap-muted" />
+        <span className="text-[12px] font-semibold text-gap-navy">
+          Ainda deve entrar · {money(fixo + varia)}
+        </span>
+        <span className="text-[11px] text-gap-muted">
+          {moneyShort(fixo)} já contratado + {moneyShort(varia)} de gasto do dia a dia
+        </span>
+        {aberto ? <ChevronUp size={14} className="ml-auto text-gap-muted" />
+          : <ChevronDown size={14} className="ml-auto text-gap-muted" />}
+      </button>
+
+      {aberto && (
+        <div className="mt-3">
+          <div className="flex items-center text-[10.5px] text-gap-muted mb-1">
+            <span className="w-[118px] shrink-0">categoria</span>
+            <span className="flex-1" />
+            <span className="w-[78px] text-right">já contratado</span>
+            <span className="w-[78px] text-right">dia a dia</span>
+            <span className="w-[76px] text-right">total</span>
+          </div>
+          {linhas.map((l) => (
+            <div key={l.cat} className="flex items-center text-[12px] py-[3px]">
+              <span className="w-[118px] shrink-0 truncate" title={l.cat}>{l.cat}</span>
+              <span className="flex-1 px-2">
+                <span className="flex h-[14px] rounded-sm overflow-hidden bg-gap-soft"
+                  style={{ width: `${(l.total_cents / max) * 100}%` }}>
+                  {/* navy = certo, cinza = estimado */}
+                  <span style={{ flex: l.fixo_cents, background: GAP.navy }} />
+                  <span style={{ flex: l.variavel_cents, background: '#cbd5e1' }} />
+                </span>
+              </span>
+              <span className="w-[78px] text-right num tabular-nums">
+                {l.fixo_cents ? money(l.fixo_cents, 0) : <span className="text-gap-muted">—</span>}
+              </span>
+              <span className="w-[78px] text-right num tabular-nums text-gap-muted">
+                {l.variavel_cents ? money(l.variavel_cents, 0) : '—'}
+              </span>
+              <span className="w-[76px] text-right num tabular-nums font-semibold">
+                {money(l.total_cents, 0)}
+              </span>
+            </div>
+          ))}
+
+          {v.a_entrar_itens?.length > 0 && (
+            <div className="mt-2.5 pt-2 border-t border-gap-border">
+              <div className="text-[10.5px] text-gap-muted mb-1">
+                Os {v.a_entrar_itens.length} recorrentes que ainda não postaram neste ciclo:
+              </div>
+              <div className="flex flex-wrap gap-x-3 gap-y-0.5">
+                {[...v.a_entrar_itens].sort((a, b) => b.cents - a.cents).map((s) => (
+                  <span key={s.key ?? s.label} className="text-[11px]">
+                    <span className="text-gap-muted">{s.label.slice(0, 24)}</span>{' '}
+                    <b className="num">{money(s.cents, 0)}</b>
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+          <div className="text-[10.5px] text-gap-muted mt-2">
+            O dia a dia é rateado pela distribuição do que você já gastou neste ciclo —
+            o total vem do agregado, que é o número confiável; a divisão entre categorias é indicativa.
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+/**
+ * Lancamento manual que a fatura ja trouxe.
+ *
+ * Casado por valor exato + ate 3 dias, SEM exigir lojista — no manual voce
+ * digita o app de entrega e o extrato traz o restaurante. Exigir semelhanca de
+ * nome, como faz o reconcile do import, deixava passar tudo.
+ */
+function Duplicados({ itens }) {
+  const del = useDeleteTxn()
+  const [busy, setBusy] = useState(null)
+  if (!itens?.length) return null
+  const total = itens.reduce((a, d) => a + d.manual.cents, 0)
+
+  return (
+    <div className="gap-card p-3.5 border-l-4 border-l-gap-red">
+      <div className="text-[12px] font-semibold text-gap-navy mb-1 flex items-center gap-1.5">
+        <AlertTriangle size={13} className="text-gap-red" />
+        {money(total)} contado duas vezes
+      </div>
+      <div className="text-[11px] text-gap-muted mb-2.5">
+        Você lançou na mão e a fatura já trouxe o mesmo gasto. Apagando o lançamento
+        manual, fica só o do banco — que é o valor real.
+      </div>
+      <div className="flex flex-col gap-1.5">
+        {itens.map(({ manual: m, fatura: f }) => (
+          <div key={m.id} className="flex items-center gap-2 text-[12px] border border-gap-border rounded-md px-2.5 py-1.5">
+            <span className="text-gap-muted num text-[11px] w-[38px] shrink-0">
+              {m.date.slice(8, 10)}/{m.date.slice(5, 7)}
+            </span>
+            <div className="flex-1 min-w-0">
+              <div className="truncate">{m.desc}</div>
+              <div className="truncate text-[10.5px] text-gap-muted">
+                na fatura: {f.desc} · {f.date.slice(8, 10)}/{f.date.slice(5, 7)}
+              </div>
+            </div>
+            <span className="num font-semibold whitespace-nowrap">{money(m.cents)}</span>
+            <button
+              className="text-gap-red hover:bg-gap-red/10 rounded p-2 -m-0.5 disabled:opacity-40"
+              disabled={busy === m.id} aria-label={`apagar ${m.desc}`}
+              onClick={async () => {
+                setBusy(m.id)
+                try { await del.mutateAsync(m.id) } catch {} finally { setBusy(null) }
+              }}
+            >
+              {busy === m.id ? <Loader2 size={15} className="animate-spin" /> : <Trash2 size={15} />}
             </button>
           </div>
         ))}
       </div>
-      {rm.error && (
-        <div className="mt-2 text-[12px] text-gap-red whitespace-pre-line">{String(rm.error.message ?? rm.error)}</div>
-      )}
     </div>
   )
 }
@@ -278,6 +543,10 @@ export default function MesCorrentePage() {
         }
       />
 
+      {/* antes dos KPIs: "quanto posso gastar hoje" e a unica pergunta que a
+          tela responde de manha. O resto e o porque desse numero. */}
+      <div className="mb-4"><MetaCard v={v} /></div>
+
       <KpiGrid
         items={[
           { label: 'Já travado', value: money(travado), sub: 'parcelas + recorrentes', tone: 'pos' },
@@ -294,10 +563,13 @@ export default function MesCorrentePage() {
         ]}
       />
 
-      <div className="mt-4"><QuickEntry /></div>
+      <div className="mt-4"><AindaEntra v={v} /></div>
+      <div className="mt-3"><QuickEntry /></div>
       <div className="mt-3"><Composicao v={v} /></div>
+      {v.duplicados?.length > 0 && <div className="mt-3"><Duplicados itens={v.duplicados} /></div>}
       {v.sumidos?.length > 0 && <div className="mt-3"><Sumidos itens={v.sumidos} /></div>}
       {v.candidates?.length > 0 && <div className="mt-3"><Candidatos itens={v.candidates} /></div>}
+      {v.eventCandidates?.length > 0 && <div className="mt-3"><Eventos itens={v.eventCandidates} /></div>}
 
       <div className="grid lg:grid-cols-2 gap-4 mt-4">
         <div className="gap-card p-3.5">
@@ -346,7 +618,10 @@ export default function MesCorrentePage() {
         <div className="text-[12px] font-semibold text-gap-navy mb-2 flex items-center gap-1.5">
           <PencilLine size={13} className="text-gap-muted" />
           Lançados por você em {monthLabel(v.month)}
-          <span className="ml-auto num text-gap-muted font-normal">{money(v.logged_cents)}</span>
+          {/* manual_cents, nao logged_cents: este ultimo soma o variavel da
+              fatura importada, entao o cabecalho mostrava um total uma ordem de
+              grandeza acima da soma das linhas da propria tabela */}
+          <span className="ml-auto num text-gap-muted font-normal">{money(v.manual_cents)}</span>
         </div>
         <GapTable
           wrap maxHeight={360}
