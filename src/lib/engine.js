@@ -552,7 +552,8 @@ const DIAS_CICLO = 30
  * detalha-se por categoria so pra medir consumo contra a meta.
  */
 function goalView({ config, elapsed_share, fixed_outflow_cents, ja_na_fatura_cents,
-                    a_entrar_cents, variavelTxns, restante_variavel_cents, todayISO }) {
+                    a_entrar_cents, variavelTxns, restante_variavel_cents,
+                    travado_cents, todayISO }) {
   const meta = config?.budget
   if (!meta?.total_cents) return null
 
@@ -679,10 +680,17 @@ function goalView({ config, elapsed_share, fixed_outflow_cents, ja_na_fatura_cen
      * antes de voce decidir qualquer coisa. O que sobra e o teto do variavel —
      * e so contra ESSE numero faz sentido comparar as metas por categoria.
      */
+    /*
+     * `travado` vem PRONTO de fora, nao derivado por subtracao.
+     *
+     * Derivar de `comprometido - variavel - eventos` dava um terceiro numero:
+     * omitia os fixos que nao passam no cartao (que a meta inclui) e embutia a
+     * estimativa de nao-postado, que e variavel. A tela mostrava R$ 5.141 no
+     * KPI e R$ 3.784 nesta linha, para a mesma palavra.
+     */
     decomposicao: {
-      travado_cents: comprometido_cents - variavel_cents - eventos_cents,
-      teto_variavel_cents: meta.total_cents
-        - (comprometido_cents - variavel_cents - eventos_cents),
+      travado_cents,
+      teto_variavel_cents: meta.total_cents - travado_cents,
       variavel_projetado_cents: variavel_cents + ritmo_cents * (DIAS_CICLO - dias_com_dado),
       eventos_cents,
     },
@@ -950,6 +958,11 @@ export function monthView(ds, todayISO) {
       // a MESMA fatia que o card "ainda deve entrar" rateia, pra os dois cards
       // da mesma tela nao darem numeros diferentes pro mesmo gasto
       restante_variavel_cents: remaining.p50,
+      // a MESMA definicao do KPI "ja travado": parcelas + recorrentes do cartao
+      // + fixos de fora. Sem passar pronto, a decomposicao inventava um terceiro
+      // valor pra mesma palavra.
+      travado_cents: installments_cents + subscriptions_cents + fixed_card_cents
+        + fixed_outflow_cents,
     }),
     candidates: detectCandidates(txns, last, config),
     /*

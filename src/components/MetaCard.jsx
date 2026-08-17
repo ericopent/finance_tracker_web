@@ -13,13 +13,21 @@ import { GAP, money, moneyShort, moneySigned, brNum } from '../theme/gap'
  */
 
 /** Linha de uma categoria: consumido contra meta, com a marca do calendario. */
-function LinhaCategoria({ c, elapsed }) {
+function LinhaCategoria({ c, elapsed, maiorConsumo }) {
   const semMeta = c.meta_cents == null
-  const share = semMeta ? 0 : Math.max(0, c.share)
+  /*
+   * Sem meta na categoria, a barra media OUTRA coisa: a fatia dela no maior
+   * gasto da lista. Antes ficava com largura zero — dez barras vazias e uma
+   * coluna de "sem meta", que e pior que nao mostrar nada, porque parece
+   * quebrado e o numero do lado acaba lido como se fosse estouro.
+   */
+  const share = semMeta
+    ? (maiorConsumo > 0 ? Math.max(0, c.consumido_cents) / maiorConsumo : 0)
+    : Math.max(0, c.share)
   const estourou = !semMeta && c.consumido_cents > c.meta_cents
   // adiantado = gastou proporcionalmente mais que o tempo decorrido
   const alerta = !semMeta && c.adiantado > 0.12
-  const cor = estourou ? GAP.red : alerta ? '#f59e0b' : GAP.blue
+  const cor = semMeta ? '#cbd5e1' : estourou ? GAP.red : alerta ? '#f59e0b' : GAP.blue
 
   return (
     <div className="flex items-center gap-2.5 text-[12px] py-1">
@@ -58,7 +66,8 @@ function LinhaCategoria({ c, elapsed }) {
         )}
         title={semMeta ? '' : `no ritmo, fecha em ${money(c.projetado_cents)} · ${c.n} lançamentos`}
       >
-        {semMeta ? 'sem meta'
+        {semMeta
+          ? <span title={`${c.n} lançamentos`}>{`${c.confiavel ? '' : '~'}${moneyShort(c.projetado_cents)}`}</span>
           : `${c.confiavel ? '' : '~'}${moneySigned(-c.distancia_cents, 0)}`}
       </span>
     </div>
@@ -152,6 +161,8 @@ export default function MetaCard({ v }) {
     )
   }
 
+  const temMeta = g.categorias.some((c) => c.meta_cents != null)
+  const maiorConsumo = Math.max(1, ...g.categorias.map((c) => c.consumido_cents))
   const estourou = g.disponivel_cents < 0
   const acimaDoRitmo = g.ritmo_cents > g.por_dia_cents
   const corte = g.ritmo_cents > 0 ? 1 - g.por_dia_cents / g.ritmo_cents : 0
@@ -268,10 +279,10 @@ export default function MetaCard({ v }) {
             <span className="flex-1">
               O traço marca os <b className="text-gap-navy">{brNum(v.elapsed_share * 100, 0)}%</b> do ciclo decorrido
             </span>
-            <span className="w-[86px] text-right">sobra/estouro</span>
+            <span className="w-[86px] text-right">{temMeta ? 'sobra/estouro' : 'fecha em'}</span>
           </div>
           {g.categorias.map((c) => (
-            <LinhaCategoria key={c.cat} c={c} elapsed={v.elapsed_share} />
+            <LinhaCategoria key={c.cat} c={c} elapsed={v.elapsed_share} maiorConsumo={maiorConsumo} />
           ))}
           {g.sem_meta_cents > 0 && (
             <div className="text-[10.5px] text-gap-muted mt-1.5">
