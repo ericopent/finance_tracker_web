@@ -462,11 +462,23 @@ export function detectEventCandidates(txns, config, exclude = []) {
   }
 
   const out = []
+  /*
+   * Uma linha por CHAVE, nao por transacao.
+   *
+   * Fatura importada duas vezes sob refs diferentes (aconteceu: um CSV de marco
+   * que era copia da fatura de abril) repete a mesma compra no ledger. Como a
+   * chave de evento e data+lojista+valor, as copias tem a MESMA chave: marcar
+   * uma marcava todas, mas a lista mostrava a mesma compra N vezes, empurrando
+   * os outros candidatos pra fora do limite de 10.
+   */
+  const jaListado = new Set()
   for (const t of txns) {
     if (t.kind !== 'purchase' || t.igrp != null || !t.mkey || ex.has(t.mkey)) continue
     if (t.cents < MIN_EVENTO_CENTS) continue
     const k = eventKey(t)
     if (decidido[k] !== undefined) continue          // ja respondido, sim ou nao
+    if (jaListado.has(k)) continue
+    jaListado.add(k)
 
     const vals = porLojista.get(t.mkey) ?? []
     let motivo = null
@@ -974,23 +986,49 @@ export function monthView(ds, todayISO) {
       const janela = new Set([last, monthAdd(last, -1), monthAdd(last, -2)])
       const recentes = txns.filter((t) => janela.has(t.cash) && t.kind === 'purchase' && t.igrp == null)
       const vistos = new Set(recentes.map((t) => t.mkey))
-      const declarados = new Set(fixed.map((r) => r.key).filter(Boolean))
+      const declarados = new Map(fixed.filter((r) => r.key).map((r) => [r.key, r]))
 
-      // candidato a substituto: lojista novo, valor parecido, aparece mais de uma vez
       const porChave = new Map()
       for (const t of recentes) {
-        if (declarados.has(t.mkey)) continue
-        const g = porChave.get(t.mkey) ?? { key: t.mkey, label: t.desc, vals: [], meses: new Set() }
-        g.vals.push(t.cents); g.meses.add(t.cash); porChave.set(t.mkey, g)
+        const g = porChave.get(t.mkey)
+          ?? { key: t.mkey, label: t.desc, cat: t.cat, vals: [], meses: new Set() }
+        g.vals.push(t.cents); g.meses.add(t.cash)
+        if (t.cat && !g.cat) g.cat = t.cat
+        porChave.set(t.mkey, g)
       }
 
       return fixedNoCartao.filter((s) => s.key && !vistos.has(s.key)).map((s) => {
         let sucessor = null
         for (const g of porChave.values()) {
           const med = pct([...g.vals].sort((a, b) => a - b), 0.5)
-          if (!med || Math.abs(med - s.cents) / s.cents > 0.15) continue
+          if (!med) continue
+          /*
+           * Tres filtros, cada um por um falso positivo que aconteceu.
+           *
+           * 5% e nao 15%: com a banda larga, um Pix avulso de R$ 500 foi
+           * apontado como "sucessor" de uma assinatura de R$ 585. A mesma
+           * assinatura sob outro nome nao anda 15% — anda centavos.
+           *
+           * 2 dos 3 meses: aparecer uma vez so nao e recorrencia, e coincidencia
+           * de valor.
+           *
+           * Mesma categoria: transferencia nao sucede assinatura. So compara
+           * quando as duas categorias sao conhecidas, pra nao perder o caso em
+           * que o lojista novo ainda nao foi classificado.
+           */
+          if (Math.abs(med - s.cents) / s.cents > 0.05) continue
+          if (g.meses.size < 2) continue
+          if (s.category && g.cat && s.category !== g.cat) continue
           if (sucessor && g.meses.size <= sucessor.meses) continue
-          sucessor = { key: g.key, label: g.label, cents: Math.round(med), meses: g.meses.size }
+          sucessor = {
+            key: g.key, label: g.label, cents: Math.round(med), meses: g.meses.size,
+            /*
+             * Se o sucessor JA esta cadastrado, migrar nao e o conserto — os
+             * dois estao ativos e a despesa conta em dobro dentro do proprio
+             * bloco travado. Ai o que resta e apagar este aqui.
+             */
+            ja_declarado: declarados.has(g.key),
+          }
         }
         return { ...s, sucessor }
       })

@@ -238,22 +238,33 @@ function Sumidos({ itens }) {
                 <Loader2 size={15} className="animate-spin text-gap-blue shrink-0" />
               ) : (
                 <>
-                  {s.sucessor && (
+                  {/* migrar so faz sentido se o nome novo AINDA nao estiver
+                      cadastrado; se ja estiver, os dois estao ativos e o que
+                      resta e apagar este */}
+                  {s.sucessor && !s.sucessor.ja_declarado && (
                     <button
                       className="gap-btn !py-1 !px-2 !text-[11px] shrink-0"
                       onClick={() => migrar(s)} disabled={!!busy}
                     >Migrar</button>
                   )}
                   <button
-                    className="text-gap-muted hover:text-gap-red hover:bg-gap-red/10 rounded p-2 -m-0.5 disabled:opacity-40"
+                    className={clsx('rounded p-2 -m-0.5 disabled:opacity-40',
+                      s.sucessor?.ja_declarado
+                        ? 'gap-btn !py-1 !px-2 !text-[11px] !bg-gap-red shrink-0'
+                        : 'text-gap-muted hover:text-gap-red hover:bg-gap-red/10')}
                     disabled={!!busy} aria-label={`remover ${s.label}`}
-                    title="acabou de vez — remover"
+                    title={s.sucessor?.ja_declarado ? 'apagar o duplicado' : 'acabou de vez — remover'}
                     onClick={async () => { setBusy(s.key); try { await rm.mutateAsync(s.key) } catch {} finally { setBusy(null) } }}
-                  ><Trash2 size={15} /></button>
+                  >{s.sucessor?.ja_declarado ? 'Apagar este' : <Trash2 size={15} />}</button>
                 </>
               )}
             </div>
-            {s.sucessor ? (
+            {s.sucessor?.ja_declarado ? (
+              <div className="text-[10.5px] text-gap-red">
+                <b>{s.sucessor.label}</b> ({money(s.sucessor.cents)}) já está cadastrado — os dois
+                estão ativos e a despesa conta em dobro. Apague este.
+              </div>
+            ) : s.sucessor ? (
               <div className="text-[10.5px] text-gap-muted">
                 virou <b className="text-gap-navy">{s.sucessor.label}</b> ({money(s.sucessor.cents)},
                 em {s.sucessor.meses} das últimas 3 faturas)
