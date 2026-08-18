@@ -823,6 +823,20 @@ function goalView({ config, elapsed_share, fixed_outflow_cents, ja_na_fatura_cen
     dias_ciclo: CICLO, dias_corridos, dias_restantes, dias_com_dado, dias_sem_dado,
     ciclo_fim,
     nao_postado_cents, eventos_cents, atrasado_cents, ciclo_inicio,
+    /*
+     * A BASE de tudo o que se compara com a meta.
+     *
+     * `no_ritmo_cents` sempre foi fatura + fixos de fora, porque a meta e sobre
+     * o gasto TOTAL do mes. Mas o KPI vizinho mostrava `fatura.p50`, que e so o
+     * cartao. Os dois apareciam lado a lado como "quanto vai fechar" com
+     * R$ 1.482 de diferenca, e nada na tela dizia que R$ 1.590 disso era o
+     * seguro + marina + surf, que nao passam no cartao.
+     *
+     * Expondo a parcela de fora, os dois numeros se reconciliam na propria tela:
+     * fatura + fora = total, e o que sobra de diferenca (~R$ 107) e so ritmo do
+     * ciclo contra nivel historico.
+     */
+    fora_do_cartao_cents: fixed_outflow_cents,
     variavel_cents, ritmo_cents, por_dia_cents, no_ritmo_cents,
     distancia_cents: no_ritmo_cents - meta.total_cents,
     categorias,

@@ -713,7 +713,13 @@ export default function MesCorrentePage() {
               : `${v.logged_count} lançamento${v.logged_count === 1 ? '' : 's'}`,
           },
           { label: 'Ainda deve entrar', value: money(v.a_entrar_cents + v.remaining.p50), sub: `previsão · ${moneyShort(v.remaining.p10 + v.a_entrar_cents)} – ${moneyShort(v.remaining.p90 + v.a_entrar_cents)}` },
-          { label: 'Fatura estimada', value: money(v.fatura.p50), sub: `faixa 80%: ${moneyShort(v.fatura.p10)} – ${moneyShort(v.fatura.p90)}`, tone: 'pos' },
+          {
+            label: 'Fatura estimada', value: money(v.fatura.p50), tone: 'pos',
+            // "so cartao" e o total ao lado: sem isso este numero e o "neste
+            // ritmo fecha em" do card da meta pareciam duas respostas pra mesma
+            // pergunta, com R$ 1,5k de diferenca que era so base diferente
+            sub: `só cartão · com os fixos, ${moneyShort(v.total.p50)}`,
+          },
           { label: 'Sobra estimada', value: moneySigned(v.net.p50), sub: `renda ${moneyShort(v.income_cents)} − fatura − ${moneyShort(v.fixed_outflow_cents)} fixos`, tone: v.net.p50 >= 0 ? 'neg' : 'pos' },
         ]}
       />

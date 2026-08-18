@@ -256,7 +256,7 @@ export default function MetaCard({ v }) {
 
         <div>
           <div className="text-[10.5px] uppercase tracking-wide text-gap-muted">
-            Neste ritmo, fecha em
+            Neste ritmo, o mês fecha em
           </div>
           <div className="num font-bold text-[22px] leading-none mt-1.5 text-gap-navy">
             {money(g.no_ritmo_cents, 0)}
@@ -266,6 +266,10 @@ export default function MetaCard({ v }) {
             {g.distancia_cents > 0
               ? `${moneyShort(g.distancia_cents)} acima da meta`
               : `${moneyShort(-g.distancia_cents)} de folga`}
+          </div>
+          {/* a base, senao este numero e o KPI "fatura estimada" parecem brigar */}
+          <div className="text-[10.5px] text-gap-muted mt-0.5">
+            fatura + {moneyShort(g.fora_do_cartao_cents)} que não passa no cartão
           </div>
         </div>
       </div>
