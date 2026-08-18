@@ -13,9 +13,12 @@ import { parseMoney, todayISO } from '../lib/money'
 const MESES = ['jan', 'fev', 'mar', 'abr', 'mai', 'jun', 'jul', 'ago', 'set', 'out', 'nov', 'dez']
 const MAX_PARCELAS = 12
 
-/** Os 24 meses a partir do proximo, pro seletor de mes da compra. */
+/**
+ * Os 24 meses a partir do CORRENTE. O mes corrente entra porque a compra pode ja
+ * ter acontecido neste ciclo — e a fatura dela ainda nao chegou.
+ */
 function opcoesDeMes() {
-  const base = monthAdd(todayISO().slice(0, 7), 1)
+  const base = todayISO().slice(0, 7)
   return Array.from({ length: 24 }, (_, i) => monthAdd(base, i))
 }
 
@@ -295,6 +298,13 @@ function Estudo({ p, pts, label }) {
             { key: 'month', label: 'Mês', align: 'left', fmt: (m) => <span className="whitespace-nowrap">{monthLabel(m)}</span> },
             { key: 'aporte_cents', label: 'Guardar', align: 'right', fmt: (c) => (c ? money(c) : '—') },
             { key: 'parcela_cents', label: 'Parcela', align: 'right', fmt: (c) => (c ? money(c) : '—') },
+            ...(p.meses.some((m) => m.oneoff_in_cents || m.oneoff_out_cents) ? [{
+              key: 'po', label: 'Pontual', align: 'right', colorSign: true,
+              fmt: (_, r) => {
+                const v = (r.oneoff_in_cents ?? 0) - (r.oneoff_out_cents ?? 0)
+                return v ? moneySigned(v) : '—'
+              },
+            }] : []),
             { key: 'net_p50', label: 'Sobra (p50)', align: 'right', colorSign: true, fmt: (c) => moneySigned(c) },
             { key: 'apos_p50', label: 'Sobra após', align: 'right', colorSign: true, fmt: (c) => moneySigned(c) },
             { key: 'apos_p10', label: 'Cenário ruim', align: 'right', colorSign: true, fmt: (c) => moneySigned(c) },
@@ -308,8 +318,10 @@ function Estudo({ p, pts, label }) {
         parcela — sai do mês que aperta mais, não da média, porque um plano que fecha no fim e fura
         no meio não fecha. <b>Sobra</b> vem do fluxo de caixa (renda − parcelas já contratadas −
         recorrentes − variável projetado), então <b>já embute o que você costuma gastar</b>: guardar
-        esse valor não exige cortar nada além do que a projeção já supõe. O cenário ruim é o p10 do
-        variável.{' '}
+        esse valor não exige cortar nada além do que a projeção já supõe — e ela é a sobra
+        <b> recorrente</b>: entradas pontuais ficam de fora dela e entram como caixa no mês em que
+        chegam, abatendo o aporte em vez de virarem renda mensal. O cenário ruim é o p10 do
+        variável, e o aporte já conta com o rendimento do caixa no CDB.{' '}
         {p.guardado_cents > 0 && <>Os {money(p.guardado_cents)} já guardados estão descontados.{' '}</>}
         A projeção já carrega uma provisão mensal de eventos vinda do seu histórico — este objetivo
         entra <b>por cima</b> dela, não no lugar dela.

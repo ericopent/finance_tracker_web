@@ -231,6 +231,8 @@ function saveConfig(mutate, message) {
     cfg.budget ??= { total_cents: 0, categories: {} }
     cfg.events ??= {}
     cfg.plan ??= null
+    cfg.oneoffs ??= []
+    cfg.yield ??= { cdi_aa: 0.139, pct_cdi: 1, ir: 0.20 }
     mutate(cfg)
   }, message, { recurring: [], rules: [], memory: {} })
 }
@@ -294,6 +296,49 @@ export function useCancelRecurring() {
         active: false, confirmed: false, cancelled: true,
       })
     }, `cancelado: ${item.label ?? item.key ?? item}`)
+  )
+}
+
+/**
+ * Entrada/saida pontual num mes especifico.
+ *
+ * Nao e recorrente (inflaria todo o horizonte) e nao e lancamento de fatura
+ * (nao passa no cartao). E o Pix que entra uma vez, o bonus, a matricula da
+ * escola em janeiro.
+ */
+/** Rendimento do caixa parado: CDI, % do CDI que o CDB paga, e IR. */
+export function useSetYield() {
+  return useDatasetMutation((y) =>
+    saveConfig((cfg) => {
+      cfg.yield = {
+        cdi_aa: Math.max(0, y.cdi_aa ?? 0),
+        pct_cdi: Math.max(0, y.pct_cdi ?? 1),
+        ir: Math.min(1, Math.max(0, y.ir ?? 0.20)),
+      }
+    }, `rendimento: ${((y.pct_cdi ?? 1) * 100).toFixed(0)}% do CDI de ${((y.cdi_aa ?? 0) * 100).toFixed(2)}%`)
+  )
+}
+
+export function useAddOneoff() {
+  return useDatasetMutation((o) =>
+    saveConfig((cfg) => {
+      const id = o.id ?? `${o.month}|${o.label}|${o.cents}`
+      cfg.oneoffs = cfg.oneoffs.filter((x) => x.id !== id)  // idempotente: ver saveConfig
+      cfg.oneoffs.push({
+        id, label: o.label, month: o.month,
+        cents: Math.max(0, Math.round(o.cents)),
+        direction: o.direction === 'outflow' ? 'outflow' : 'inflow',
+      })
+      cfg.oneoffs.sort((a, b) => a.month.localeCompare(b.month))
+    }, `pontual: ${o.label} ${(o.cents / 100).toFixed(2)} em ${o.month}`)
+  )
+}
+
+export function useRemoveOneoff() {
+  return useDatasetMutation((id) =>
+    saveConfig((cfg) => {
+      cfg.oneoffs = cfg.oneoffs.filter((x) => x.id !== id)
+    }, `remove pontual ${id}`)
   )
 }
 

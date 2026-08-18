@@ -215,6 +215,26 @@ export function merchantKey(desc) {
     .trim()
 }
 
+/**
+ * Rendimento MENSAL liquido do caixa parado — o CDB de 100% do CDI do Itau.
+ *
+ * Sobra que fica na conta nao rende; no CDB, rende. Num plano de 14 meses isso
+ * nao e detalhe de segunda ordem: e a diferenca entre precisar guardar o valor
+ * cheio e deixar o juro pagar um pedaco.
+ *
+ * O IR e aplicado sobre o juro TODO MES, e nao so no resgate. E conservador de
+ * proposito — a tabela regressiva (22,5% ate 180 dias, 20% ate 360, 17,5% ate
+ * 720) cobra menos que isso quanto mais tempo o dinheiro fica, e um plano que
+ * erra pro lado de guardar demais falha melhor do que o contrario.
+ */
+export function monthlyYield(config) {
+  const y = config?.yield
+  if (!y?.cdi_aa) return 0
+  const anual = y.cdi_aa * (y.pct_cdi ?? 1)
+  const bruta = Math.pow(1 + anual, 1 / 12) - 1
+  return bruta * (1 - (y.ir ?? 0.20))
+}
+
 // ---------------------------------------------------------------- 1. parcelas
 
 export function installmentsDue(txns, lastStatement, target) {
@@ -339,27 +359,28 @@ export function declaredRecurring(config, direction) {
   return (config?.recurring ?? [])
     .filter((r) => r.active && r.direction === direction)
     .map((r) => ({
-      ...r, label: r.label, declared: true, months_seen: 0, cv: 0,
-      // custo LIQUIDO. `cents_bruto` sobrevive pra tela mostrar o valor real da
-      // cobranca — some-lo seria esconder R$ 180 que passam no cartao todo mes.
-      cents: r.reembolsado ? 0 : r.cents,
-      cents_bruto: r.cents,
-      reembolsado: !!r.reembolsado,
+      ...r, label: r.label, cents: r.cents, cents_bruto: r.cents,
+      declared: true, months_seen: 0, cv: 0, reembolsado: !!r.reembolsado,
     }))
-    .sort((a, b) => b.cents_bruto - a.cents_bruto)
+    .sort((a, b) => b.cents - a.cents)
 }
 
 /**
  * Recorrente REEMBOLSADO — a empresa devolve.
  *
- * Custo liquido zero, e nao "gasto que voce faz": entra na fatura, sai da conta,
- * volta depois. Contar como despesa inflava o bloco travado e comia a meta do
- * mes por um dinheiro que nunca foi seu.
+ * O valor continua BRUTO em todo lugar que descreve a FATURA, porque a fatura
+ * cobra os R$ 180 de qualquer jeito. Zera-lo ali fazia o app prever uma fatura
+ * R$ 180 menor do que ela vem, e a lista de "ainda deve entrar" mostrava a
+ * assinatura valendo R$ 0 — numero que nao existe em lugar nenhum da vida real.
+ *
+ * O reembolso entra pelo outro lado, como ENTRADA: some na renda do mes. O
+ * efeito liquido no bolso e zero, que era o objetivo, mas agora as duas metades
+ * aparecem, e a fatura projetada continua batendo com a que chega.
  *
  * Diferente de CANCELADO em um ponto que importa: a cobranca continua
  * acontecendo, entao o detector tem que continuar reconhecendo o padrao. Calar
- * o detector aqui jogaria os R$ 180 no bolo do gasto variavel, que e o erro que
- * o `cancelled` existe pra evitar — so que ao contrario.
+ * o detector aqui jogaria os R$ 180 no bolo do gasto variavel — o mesmo erro
+ * que o `cancelled` existe pra evitar, so que ao contrario.
  */
 export function reimbursedKeys(config) {
   return (config?.recurring ?? [])
@@ -368,12 +389,30 @@ export function reimbursedKeys(config) {
     .filter(Boolean)
 }
 
-/** Zera o custo das detectadas que sao reembolsadas, preservando o valor bruto. */
+/**
+ * Entradas e saidas PONTUAIS — caem num mes so e nao se repetem.
+ *
+ * Um Pix de R$ 7.000 que entra em setembro nao e renda mensal, e um bonus nao e
+ * salario. Cadastrar como recorrente inflaria a renda de todo o horizonte;
+ * ignorar faria a projecao mentir pra baixo no mes em que o dinheiro chega.
+ *
+ * Ficam FORA da "sobra" media que o plano usa como regua, de proposito: media
+ * de um evento unico vira previsao de que ele se repete, que e o mesmo erro que
+ * a provisao de eventos existe pra evitar. Entram como CAIXA no mes certo.
+ */
+export function oneoffsIn(config, month) {
+  return (config?.oneoffs ?? []).filter((o) => o.month === month)
+}
+
+/** Marca as detectadas que sao reembolsadas. O valor segue bruto: e o da fatura. */
 function netDetected(detected, config) {
   const reemb = new Set(reimbursedKeys(config))
-  return detected.map((s) => (reemb.has(s.key)
-    ? { ...s, cents: 0, cents_bruto: s.cents, reembolsado: true }
-    : { ...s, cents_bruto: s.cents, reembolsado: false }))
+  return detected.map((s) => ({ ...s, cents_bruto: s.cents, reembolsado: reemb.has(s.key) }))
+}
+
+/** Soma do que a empresa devolve por mes, entre os recorrentes em vigor. */
+function reembolsoDe(lista) {
+  return lista.filter((r) => r.reembolsado).reduce((a, r) => a + r.cents, 0)
 }
 
 /**
@@ -609,11 +648,16 @@ const DIAS_CICLO = 30
  */
 function goalView({ config, elapsed_share, fixed_outflow_cents, ja_na_fatura_cents,
                     a_entrar_cents, variavelTxns, restante_variavel_cents,
-                    travado_cents, todayISO }) {
+                    travado_cents, reembolso_cents, todayISO }) {
   const meta = config?.budget
   if (!meta?.total_cents) return null
 
-  const teto_fatura_cents = meta.total_cents - fixed_outflow_cents
+  /*
+   * O reembolsado ocupa espaco na fatura mas nao e gasto seu, entao o teto sobe
+   * por ele. Sem isso a meta de R$ 10.000 virava R$ 9.820 de gasto proprio
+   * permitido, e a regua diaria apertava por um dinheiro que a empresa paga.
+   */
+  const teto_fatura_cents = meta.total_cents - fixed_outflow_cents + (reembolso_cents ?? 0)
 
   /*
    * Evento sai do RITMO mas fica no gasto.
@@ -824,7 +868,10 @@ export function monthView(ds, todayISO) {
   const fixedForaDoCartao = fixed.filter((s) => !s.key)
   const fixed_card_cents = fixedNoCartao.reduce((a, s) => a + s.cents, 0)
   const fixed_outflow_cents = fixedForaDoCartao.reduce((a, s) => a + s.cents, 0)
+  const reembolso_cents = reembolsoDe(detected) + reembolsoDe(fixed)
+  // a fatura cobra o bruto (ver reimbursedKeys); o reembolso volta pelo caixa
   const income_cents = declaredRecurring(config, 'inflow').reduce((a, s) => a + s.cents, 0)
+    + reembolso_cents
   const subscriptions = [...detected, ...fixed]
 
   /*
@@ -1028,7 +1075,7 @@ export function monthView(ds, todayISO) {
     })(),
     goal: goalView({
       config, elapsed_share, fixed_outflow_cents, ja_na_fatura_cents, a_entrar_cents,
-      variavelTxns: [...variavelNaFatura, ...loggedTxns], todayISO,
+      variavelTxns: [...variavelNaFatura, ...loggedTxns], todayISO, reembolso_cents,
       // a MESMA fatia que o card "ainda deve entrar" rateia, pra os dois cards
       // da mesma tela nao darem numeros diferentes pro mesmo gasto
       restante_variavel_cents: remaining.p50,
@@ -1181,7 +1228,10 @@ export function cashflow(ds, fromMonth, horizon = 12, openingCents = 0, todayISO
   ])]
   const subs = detected.reduce((a, s) => a + s.cents, 0)
   const fixed = fixedAll.reduce((a, s) => a + s.cents, 0)
+  // reembolso volta como entrada: a fatura cobra o bruto, o bolso nao sente
+  const reembolso = reembolsoDe(detected) + reembolsoDe(fixedAll)
   const income = declaredRecurring(config, 'inflow').reduce((a, s) => a + s.cents, 0)
+  const rend = monthlyYield(config)
 
   /*
    * NIVEL vem das ultimas 2 faturas; DISPERSAO vem dos 12 meses.
@@ -1240,30 +1290,45 @@ export function cashflow(ds, fromMonth, horizon = 12, openingCents = 0, todayISO
     const rec = subs + fixed
     const ancorado = k === 0 && mv && mv.fatura_alvo === m
 
+    // pontuais sao CERTOS: deslocam as tres faixas igualmente, sem abrir a banda
+    const pontuais = oneoffsIn(config, m)
+    const p_in = pontuais.filter((o) => o.direction !== 'outflow').reduce((a, o) => a + o.cents, 0)
+    const p_out = pontuais.filter((o) => o.direction === 'outflow').reduce((a, o) => a + o.cents, 0)
+
     // com ancora, o gasto do mes e o total do monthView; sem, e a soma dos
     // blocos + a provisao de evento (que no mes ancorado ja esta no realizado)
-    const gasto = ancorado
+    const base = ancorado
       ? { p10: mv.total.p10, p50: mv.total.p50, p90: mv.total.p90 }
       : {
           p10: inst + rec + d.p10 + provisao_eventos,
           p50: inst + rec + d.p50 + provisao_eventos,
           p90: inst + rec + d.p90 + provisao_eventos,
         }
+    const gasto = { p10: base.p10 + p_out, p50: base.p50 + p_out, p90: base.p90 + p_out }
+    const entrada = income + p_in + reembolso
 
     const net = {
-      p10: income - gasto.p90,
-      p50: income - gasto.p50,
-      p90: income - gasto.p10,
+      p10: entrada - gasto.p90,
+      p50: entrada - gasto.p50,
+      p90: entrada - gasto.p10,
     }
+    /*
+     * Juro sobre o saldo que ENTROU no mes, antes do fluxo do proprio mes: o
+     * dinheiro de setembro so rende em outubro. Capitalizar junto com o aporte
+     * daria um mes de juro que nao existe.
+     */
+    const j10 = Math.round(b10 * rend), j50 = Math.round(b50 * rend), j90 = Math.round(b90 * rend)
     // a banda do SALDO abre com o tempo: empilha meses ruins em sequencia
-    b10 += net.p10; b50 += net.p50; b90 += net.p90
+    b10 += j10 + net.p10; b50 += j50 + net.p50; b90 += j90 + net.p90
     out.push({
       month: m, installments_cents: inst, recurring_cents: rec,
       // no mes ancorado o "variavel" e o residuo, pra linha continuar somando
       discretionary: ancorado
         ? { p10: gasto.p10 - inst - rec, p50: gasto.p50 - inst - rec, p90: gasto.p90 - inst - rec }
         : d,
-      gasto, ancorado, income_cents: income, net, regime,
+      gasto, ancorado, income_cents: entrada, net, regime,
+      oneoff_in_cents: p_in, oneoff_out_cents: p_out, oneoffs: pontuais,
+      reembolso_cents: reembolso, juros_cents: j50, yield_mes: rend,
       balance: { p10: b10, p50: b50, p90: b90 },
     })
   }
@@ -1337,12 +1402,29 @@ export function goalPlan(pts, {
     let acumulado = 0
     let aporte = 0
     let ultimo_mes = null
+    /*
+     * `fundo` = dinheiro que chega sem esforco mensal: o que ja esta guardado
+     * mais os pontuais ate aquele mes. Um Pix de R$ 7.000 em setembro nao muda
+     * o preco da viagem, muda quanto dela ja esta paga quando a parcela chega —
+     * e por isso derruba o aporte exigido em vez de virar sobra recorrente.
+     */
+    /*
+     * Tudo capitalizado ate o mes da parcela, porque o dinheiro fica no CDB.
+     * `annuity` e o valor futuro de guardar 1 por mes; com juro zero ela vira
+     * (i+1) e a conta degenera exatamente na versao sem rendimento.
+     */
+    const f = 1 + (pts[0]?.yield_mes ?? 0)
+    let fundo = guardado_cents
+    let annuity = 0
     pts.forEach((p, i) => {
+      if (i > 0) { acumulado *= f; fundo *= f; annuity *= f }
+      annuity += 1
+      fundo += (p.oneoff_in_cents ?? 0) - (p.oneoff_out_cents ?? 0)
       const dev = devido.get(p.month)
       if (!dev) return
       acumulado += dev
       ultimo_mes = p.month
-      const preciso = (acumulado - guardado_cents) / (i + 1)
+      const preciso = (acumulado - fundo) / annuity
       if (preciso > aporte) aporte = preciso
     })
     // parcela que cai fora do horizonte projetado: o plano nao esta coberto
@@ -1364,11 +1446,17 @@ export function goalPlan(pts, {
 
   const meses = pts.map((row, i) => {
     const parcela_cents = p.devido.get(row.month) ?? 0
+    const p_in = row.oneoff_in_cents ?? 0
+    const p_out = row.oneoff_out_cents ?? 0
     return {
       month: row.month,
       parcela_cents,
+      oneoff_in_cents: p_in,
+      oneoff_out_cents: p_out,
       net_p50: row.net.p50,
       net_p10: row.net.p10,
+      // sobra REPETIVEL: media de pontual vira previsao de que ele se repete
+      recorrente_p50: row.net.p50 - p_in + p_out,
       // o que sobra DEPOIS de honrar a parcela: o numero que diz se aperta
       apos_p50: row.net.p50 - parcela_cents,
       apos_p10: row.net.p10 - parcela_cents,
@@ -1378,7 +1466,7 @@ export function goalPlan(pts, {
 
   const janela = meses.slice(0, pts.findIndex((x) => x.month === p.ultimo_mes) + 1)
   const sobra_media = janela.length
-    ? Math.round(janela.reduce((a, m) => a + m.net_p50, 0) / janela.length)
+    ? Math.round(janela.reduce((a, m) => a + m.recorrente_p50, 0) / janela.length)
     : 0
   const apertados = janela.filter((m) => m.apos_p50 < 0).map((m) => m.month)
 
@@ -1399,7 +1487,11 @@ export function goalPlan(pts, {
     alternativas: Array.from({ length: max_alternativas }, (_, k) => {
       const alt = plano(k + 1)
       const jan = pts.slice(0, pts.findIndex((x) => x.month === alt.ultimo_mes) + 1)
-      const media = jan.length ? Math.round(jan.reduce((a, m) => a + m.net.p50, 0) / jan.length) : 0
+      const media = jan.length
+        ? Math.round(jan.reduce(
+            (a, m) => a + m.net.p50 - (m.oneoff_in_cents ?? 0) + (m.oneoff_out_cents ?? 0), 0
+          ) / jan.length)
+        : 0
       return {
         parcelas: alt.parcelas,
         parcela_cents: alt.parcela_cents,
