@@ -338,8 +338,42 @@ export function detectCandidates(txns, lastStatement, config) {
 export function declaredRecurring(config, direction) {
   return (config?.recurring ?? [])
     .filter((r) => r.active && r.direction === direction)
-    .map((r) => ({ ...r, label: r.label, cents: r.cents, declared: true, months_seen: 0, cv: 0 }))
-    .sort((a, b) => b.cents - a.cents)
+    .map((r) => ({
+      ...r, label: r.label, declared: true, months_seen: 0, cv: 0,
+      // custo LIQUIDO. `cents_bruto` sobrevive pra tela mostrar o valor real da
+      // cobranca — some-lo seria esconder R$ 180 que passam no cartao todo mes.
+      cents: r.reembolsado ? 0 : r.cents,
+      cents_bruto: r.cents,
+      reembolsado: !!r.reembolsado,
+    }))
+    .sort((a, b) => b.cents_bruto - a.cents_bruto)
+}
+
+/**
+ * Recorrente REEMBOLSADO — a empresa devolve.
+ *
+ * Custo liquido zero, e nao "gasto que voce faz": entra na fatura, sai da conta,
+ * volta depois. Contar como despesa inflava o bloco travado e comia a meta do
+ * mes por um dinheiro que nunca foi seu.
+ *
+ * Diferente de CANCELADO em um ponto que importa: a cobranca continua
+ * acontecendo, entao o detector tem que continuar reconhecendo o padrao. Calar
+ * o detector aqui jogaria os R$ 180 no bolo do gasto variavel, que e o erro que
+ * o `cancelled` existe pra evitar — so que ao contrario.
+ */
+export function reimbursedKeys(config) {
+  return (config?.recurring ?? [])
+    .filter((r) => r.reembolsado)
+    .map((r) => r.key)
+    .filter(Boolean)
+}
+
+/** Zera o custo das detectadas que sao reembolsadas, preservando o valor bruto. */
+function netDetected(detected, config) {
+  const reemb = new Set(reimbursedKeys(config))
+  return detected.map((s) => (reemb.has(s.key)
+    ? { ...s, cents: 0, cents_bruto: s.cents, reembolsado: true }
+    : { ...s, cents_bruto: s.cents, reembolsado: false }))
 }
 
 /**
@@ -769,8 +803,11 @@ export function monthView(ds, todayISO) {
    * os R$ 162 no travado, todo mes, pra sempre.
    */
   const canceladas = new Set(cancelledKeys(config))
-  const detected = detectSubscriptions(txns, last)
-    .filter((s) => !declaredKeys.has(s.key) && !canceladas.has(s.key))
+  const detected = netDetected(
+    detectSubscriptions(txns, last)
+      .filter((s) => !declaredKeys.has(s.key) && !canceladas.has(s.key)),
+    config
+  )
   const subscriptions_cents = detected.reduce((a, s) => a + s.cents, 0)
   // sem isso a assinatura conta duas vezes: travada aqui e diluida na projecao
   const exclude = detected.map((s) => s.key)
@@ -1124,8 +1161,11 @@ export function cashflow(ds, fromMonth, horizon = 12, openingCents = 0, todayISO
   // mesma deduplicacao do monthView: declarado ganha, detectado sai da lista
   const declaredKeys = new Set(fixedAll.map((r) => r.key).filter(Boolean))
   const canceladas = new Set(cancelledKeys(config))  // ver monthView
-  const detected = detectSubscriptions(txns, last)
-    .filter((s) => !declaredKeys.has(s.key) && !canceladas.has(s.key))
+  const detected = netDetected(
+    detectSubscriptions(txns, last)
+      .filter((s) => !declaredKeys.has(s.key) && !canceladas.has(s.key)),
+    config
+  )
 
   /*
    * Mesma exclusao do monthView, e pela mesma razao.

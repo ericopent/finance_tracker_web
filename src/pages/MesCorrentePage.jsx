@@ -7,7 +7,7 @@ import GapTable from '../components/GapTable'
 import QuickEntry from '../components/QuickEntry'
 import MetaCard from '../components/MetaCard'
 
-import { useMonthView, useDeleteTxn, useConfirmRecurring, useDismissRecurring, useRemoveRecurring, useCancelRecurring, useMarkEvent } from '../lib/api'
+import { useMonthView, useDeleteTxn, useConfirmRecurring, useDismissRecurring, useRemoveRecurring, useCancelRecurring, useReimburseRecurring, useMarkEvent } from '../lib/api'
 import { clearAuth } from '../lib/github'
 import { GAP, money, moneyShort, moneySigned, monthLabel, brNum } from '../theme/gap'
 
@@ -517,6 +517,7 @@ function Duplicados({ itens }) {
  */
 function Recorrentes({ v }) {
   const cancelar = useCancelRecurring()
+  const reembolsar = useReimburseRecurring()
   const [busy, setBusy] = useState(null)
   const [confirmar, setConfirmar] = useState(null)
 
@@ -525,6 +526,12 @@ function Recorrentes({ v }) {
     if (confirmar !== id) { setConfirmar(id); return }
     setBusy(id); setConfirmar(null)
     try { await cancelar.mutateAsync(r) } catch { /* mostrado abaixo */ } finally { setBusy(null) }
+  }
+
+  const marcarReembolso = async (r) => {
+    const id = r.key || r.id
+    setBusy(id); setConfirmar(null)
+    try { await reembolsar.mutateAsync({ ...r, desfazer: r.reembolsado }) } catch { /* abaixo */ } finally { setBusy(null) }
   }
 
   return (
@@ -542,26 +549,52 @@ function Recorrentes({ v }) {
         columns={[
           { key: 'label', label: 'Item', align: 'left', fmt: (x) => <span className="truncate block max-w-[210px]" title={x}>{x}</span> },
           { key: 'declared', label: 'Origem', fmt: (d, r) => d ? 'cadastrado' : `${r.months_seen}/6 meses` },
-          { key: 'cents', label: 'Valor', align: 'right', fmt: (c) => money(c) },
+          {
+            key: 'cents', label: 'Valor', align: 'right',
+            // mostra o BRUTO: reembolsado continua passando no cartao. Sumir com
+            // a linha faria a fatura estourar sem ninguem entender por que.
+            fmt: (c, r) => (
+              <span className={clsx(r.reembolsado && 'text-gap-muted line-through')}>
+                {money(r.cents_bruto ?? c)}
+              </span>
+            ),
+          },
           {
             key: 'acao', label: '', align: 'right',
             fmt: (_, r) => {
               const id = r.key || r.id
               if (busy === id) return <Loader2 size={13} className="animate-spin text-gap-blue inline" />
               return (
-                <button
-                  className={clsx(
-                    'text-[10.5px] rounded px-1.5 py-0.5 border transition-colors whitespace-nowrap',
-                    confirmar === id
-                      ? 'border-gap-red text-white bg-gap-red font-semibold'
-                      : 'border-gap-border text-gap-muted hover:border-gap-red hover:text-gap-red'
-                  )}
-                  onClick={() => acao(r)}
-                  disabled={!!busy}
-                  title="para de contar daqui pra frente, sem mexer no que ja foi cobrado"
-                >
-                  {confirmar === id ? 'confirmar' : 'cancelei'}
-                </button>
+                <div className="flex items-center justify-end gap-1">
+                  <button
+                    className={clsx(
+                      'text-[10.5px] rounded px-1.5 py-0.5 border transition-colors whitespace-nowrap',
+                      r.reembolsado
+                        ? 'border-gap-green text-gap-green font-semibold'
+                        : 'border-gap-border text-gap-muted hover:border-gap-green hover:text-gap-green'
+                    )}
+                    onClick={() => marcarReembolso(r)}
+                    disabled={!!busy || !r.key}
+                    title={r.reembolsado
+                      ? 'voltar a contar como gasto seu'
+                      : 'continua sendo cobrado, mas nao conta como gasto seu'}
+                  >
+                    {r.reembolsado ? 'reembolsado' : 'empresa paga'}
+                  </button>
+                  <button
+                    className={clsx(
+                      'text-[10.5px] rounded px-1.5 py-0.5 border transition-colors whitespace-nowrap',
+                      confirmar === id
+                        ? 'border-gap-red text-white bg-gap-red font-semibold'
+                        : 'border-gap-border text-gap-muted hover:border-gap-red hover:text-gap-red'
+                    )}
+                    onClick={() => acao(r)}
+                    disabled={!!busy}
+                    title="para de contar daqui pra frente, sem mexer no que ja foi cobrado"
+                  >
+                    {confirmar === id ? 'confirmar' : 'cancelei'}
+                  </button>
+                </div>
               )
             },
           },
@@ -571,7 +604,9 @@ function Recorrentes({ v }) {
       <div className="text-[10.5px] text-gap-muted mt-2">
         <b>Cancelei</b> tira o item das projeções daqui pra frente — do travado e do variável, e o
         detector para de reencontrá-lo no histórico. O que já está na fatura aberta continua
-        contando: a cobrança aconteceu.
+        contando: a cobrança aconteceu. <b>Empresa paga</b> é outra coisa: a cobrança continua
+        acontecendo (por isso o valor segue na lista, riscado), mas não conta como gasto seu — nem
+        no travado, nem contra a meta do mês.
       </div>
       {cancelar.isError && (
         <div className="text-[11px] text-gap-red mt-1.5">

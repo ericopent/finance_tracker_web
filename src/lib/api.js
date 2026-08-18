@@ -298,6 +298,32 @@ export function useCancelRecurring() {
 }
 
 /**
+ * "A empresa me devolve" — custo liquido zero, cobranca preservada.
+ *
+ * Nao e cancelamento: a assinatura continua sendo cobrada, e o detector precisa
+ * continuar vendo o padrao. So para de contar como SEU gasto.
+ */
+export function useReimburseRecurring() {
+  return useDatasetMutation((item) =>
+    saveConfig((cfg) => {
+      const key = item.key
+      const atual = cfg.recurring.find((r) => r.key === key)
+      if (atual) {
+        atual.reembolsado = !item.desfazer
+      } else {
+        // detectada nao tem linha no config: cria uma que so carrega a decisao
+        cfg.recurring = cfg.recurring.filter((r) => r.key !== key)
+        cfg.recurring.push({
+          id: item.id ?? Date.now(), label: item.label ?? key, direction: 'outflow',
+          cents: item.cents_bruto ?? item.cents ?? 0, category: item.category ?? null,
+          day: null, key, active: true, confirmed: true, reembolsado: !item.desfazer,
+        })
+      }
+    }, `${item.desfazer ? 'não é reembolsado' : 'reembolsado pela empresa'}: ${item.label ?? item.key}`)
+  )
+}
+
+/**
  * Plano de objetivo (viagem, troca de carro...). Um so por vez, como a meta do
  * mes: dois planos concorrendo pela mesma sobra pedem uma conta que ainda nao
  * existe, e prometer isso na tela seria mentir.
