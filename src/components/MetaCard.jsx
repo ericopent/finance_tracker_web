@@ -21,23 +21,45 @@ function LinhaCategoria({ c, elapsed, maiorConsumo }) {
    * coluna de "sem meta", que e pior que nao mostrar nada, porque parece
    * quebrado e o numero do lado acaba lido como se fosse estouro.
    */
-  const share = semMeta
-    ? (maiorConsumo > 0 ? Math.max(0, c.consumido_cents) / maiorConsumo : 0)
-    : Math.max(0, c.share)
-  const estourou = !semMeta && c.consumido_cents > c.meta_cents
+  /*
+   * A barra mostra a MESMA conta que o numero do lado: gastei + ainda vai
+   * entrar. Antes ela media so o consumido enquanto o numero media o projetado,
+   * e Alimentacao aparecia com a barra cravada em "1,2k / 1,2k" — cheia, como
+   * se estivesse no limite — e um −R$ 681 ao lado. Duas bases na mesma linha, e
+   * nenhuma pista de qual mandava.
+   *
+   * Solido = fato. Hachurado = estimativa do resto do ciclo. A distincao e o
+   * ponto: a parte hachurada e a unica que ainda responde ao que voce fizer.
+   */
+  const aEntrar = Math.max(0, (c.projetado_cents ?? c.consumido_cents) - c.consumido_cents)
+  const escala = semMeta ? (maiorConsumo || 1) : (c.meta_cents || 1)
+  const shareJa = Math.max(0, Math.min(1, c.consumido_cents / escala))
+  const shareEntra = Math.max(0, Math.min(1 - shareJa, aEntrar / escala))
+  const share = shareJa + shareEntra
+  // o alerta olha pro FIM do ciclo, nao pro instante: e o projetado que estoura
+  const estourou = !semMeta && c.projetado_cents > c.meta_cents
   // adiantado = gastou proporcionalmente mais que o tempo decorrido
-  const alerta = !semMeta && c.adiantado > 0.12
-  const cor = semMeta ? '#cbd5e1' : estourou ? GAP.red : alerta ? '#f59e0b' : GAP.blue
+  const alerta = !semMeta && !estourou && c.adiantado > 0.12
+  const cor = semMeta ? '#94a3b8' : estourou ? GAP.red : alerta ? '#f59e0b' : GAP.blue
 
   return (
     <div className="flex items-center gap-2.5 text-[12px] py-1">
       <span className="w-[104px] shrink-0 truncate" title={c.cat}>{c.cat}</span>
 
       <div className="flex-1 relative h-[18px] bg-gap-soft rounded-sm overflow-hidden">
-        <div
-          className="h-full rounded-sm transition-[width] duration-500"
-          style={{ width: `${Math.min(100, share * 100)}%`, background: cor }}
-        />
+        <div className="absolute inset-y-0 left-0 flex transition-[width] duration-500"
+             style={{ width: `${Math.min(100, share * 100)}%` }}>
+          <div className="h-full" style={{ flex: Math.max(shareJa, 0.0001), background: cor }} />
+          {/* hachura = ainda nao aconteceu */}
+          <div
+            className="h-full"
+            style={{
+              flex: Math.max(shareEntra, 0),
+              background: `repeating-linear-gradient(45deg, ${cor} 0 3px, transparent 3px 6px)`,
+              opacity: 0.55,
+            }}
+          />
+        </div>
         {/* onde o gasto DEVERIA estar se fosse uniforme ao longo do ciclo */}
         {!semMeta && (
           <div
@@ -48,9 +70,10 @@ function LinhaCategoria({ c, elapsed, maiorConsumo }) {
         )}
       </div>
 
-      <span className="w-[86px] shrink-0 text-right num tabular-nums">
+      <span className="w-[104px] shrink-0 text-right num tabular-nums"
+            title={`já gastou ${money(c.consumido_cents)} · no fim do ciclo ${money(c.projetado_cents)}`}>
         {moneyShort(c.consumido_cents)}
-        {!semMeta && <span className="text-gap-muted"> / {moneyShort(c.meta_cents)}</span>}
+        <span className="text-gap-muted">{' → '}{moneyShort(c.projetado_cents)}</span>
       </span>
 
       {/*
@@ -162,7 +185,9 @@ export default function MetaCard({ v }) {
   }
 
   const temMeta = g.categorias.some((c) => c.meta_cents != null)
-  const maiorConsumo = Math.max(1, ...g.categorias.map((c) => c.consumido_cents))
+  // escala das barras SEM meta: o maior projetado, nao o maior consumido —
+  // a barra passou a incluir o que ainda vai entrar e estouraria a caixa
+  const maiorConsumo = Math.max(1, ...g.categorias.map((c) => Math.max(c.consumido_cents, c.projetado_cents)))
   const estourou = g.disponivel_cents < 0
   const acimaDoRitmo = g.ritmo_cents > g.por_dia_cents
   const corte = g.ritmo_cents > 0 ? 1 - g.por_dia_cents / g.ritmo_cents : 0
@@ -277,7 +302,14 @@ export default function MetaCard({ v }) {
           )}
           <div className="flex items-center text-[10.5px] text-gap-muted mb-1.5">
             <span className="flex-1">
-              O traço marca os <b className="text-gap-navy">{brNum(v.elapsed_share * 100, 0)}%</b> do ciclo decorrido
+              <span className="inline-flex items-center gap-1 mr-2">
+                <span className="inline-block w-2.5 h-2.5 rounded-[2px] align-middle" style={{ background: GAP.blue }} />
+                já gastou
+                <span className="inline-block w-2.5 h-2.5 rounded-[2px] align-middle ml-1.5"
+                      style={{ background: `repeating-linear-gradient(45deg, ${GAP.blue} 0 3px, transparent 3px 6px)`, opacity: 0.55 }} />
+                ainda vai entrar
+              </span>
+              · o traço marca os <b className="text-gap-navy">{brNum(v.elapsed_share * 100, 0)}%</b> do ciclo decorrido
             </span>
             <span className="w-[86px] text-right">{temMeta ? 'sobra/estouro' : 'fecha em'}</span>
           </div>

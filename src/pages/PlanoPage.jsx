@@ -206,10 +206,18 @@ function Estudo({ p, pts, label }) {
         <div className="text-[11.5px] text-gap-muted">
           {p.parcelas}x de <b>{money(p.parcela_cents)}</b>, primeira na fatura de{' '}
           <b>{monthLabel(p.primeira_fatura)}</b> e última em <b>{monthLabel(p.ultimo_mes)}</b>.{' '}
-          {p.parcelas > 1 && (
+          {/* so faz sentido quando ha meses de aporte ANTES da 1a parcela; com a
+              compra ja feita a janela e igual ao prazo e a frase virava
+              "comeca 0 meses antes: sao 12 meses, nao 12" */}
+          {p.parcelas > 1 && p.aportes_n > p.parcelas && (
             <>O esforço mensal é <b>menor que a parcela</b> porque começa{' '}
               {labelMeses(pts[0].month, p.primeira_fatura)} antes dela: são{' '}
               <b>{p.aportes_n} meses</b> de disciplina, não {p.parcelas}.{' '}</>
+          )}
+          {p.guardado_cents > 0 && (
+            <>Os <b>{money(p.guardado_cents)}</b> já guardados cobrem{' '}
+              <b>{brNum(p.guardado_cents / p.parcela_cents, 1)}</b> parcelas e rendem no CDB
+              enquanto esperam — por isso o aporte é bem menor que a parcela.{' '}</>
           )}
           {p.cabe ? (
             <>Sobra projetada no período: <b>{money(p.sobra_media_cents)}</b>/mês — folga de{' '}

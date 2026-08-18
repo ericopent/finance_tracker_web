@@ -376,9 +376,32 @@ function AindaEntra({ v }) {
   const [aberto, setAberto] = useState(true)
   const linhas = v.falta_por_categoria ?? []
   if (!linhas.length) return null
+  const ja = linhas.reduce((a, l) => a + l.ja_cents, 0)
   const fixo = linhas.reduce((a, l) => a + l.fixo_cents, 0)
   const varia = linhas.reduce((a, l) => a + l.variavel_cents, 0)
-  const max = Math.max(...linhas.map((l) => l.total_cents), 1)
+  /*
+   * A escala e o MAIOR TOTAL da lista, e as tres partes dividem a mesma regua.
+   *
+   * Antes cada barra era normalizada so pelo que faltava entrar, entao uma
+   * categoria com R$ 105 pra entrar tinha barra comparavel a uma com R$ 776 —
+   * o desenho dizia "parecido" onde o numero dizia "7x". Com regua unica a
+   * barra passa a ser lida sem olhar o numero, que e a unica razao de existir
+   * uma barra.
+   */
+  const max = Math.max(...linhas.map((l) => l.fatura_cents), 1)
+
+  const Chip = ({ estilo, children }) => (
+    <span className="inline-flex items-center gap-1">
+      <span className="inline-block w-2.5 h-2.5 rounded-[2px]" style={estilo} />
+      {children}
+    </span>
+  )
+  const solido = { background: GAP.blue }
+  const contratado = { background: GAP.navy }
+  const estimado = {
+    background: `repeating-linear-gradient(45deg, ${GAP.blue} 0 3px, transparent 3px 6px)`,
+    opacity: 0.55,
+  }
 
   return (
     <div className="gap-card p-3.5">
@@ -388,65 +411,70 @@ function AindaEntra({ v }) {
       >
         <TrendingUp size={13} className="text-gap-muted" />
         <span className="text-[12px] font-semibold text-gap-navy">
-          Ainda deve entrar · {money(fixo + varia)}
+          Gasto do dia a dia · {money(ja + fixo + varia)} no ciclo
         </span>
         <span className="text-[11px] text-gap-muted">
-          {moneyShort(fixo)} já contratado + {moneyShort(varia)} de gasto do dia a dia
+          {moneyShort(ja)} já gastos + {moneyShort(fixo)} contratados + {moneyShort(varia)} estimados
         </span>
         {aberto ? <ChevronUp size={14} className="ml-auto text-gap-muted" />
           : <ChevronDown size={14} className="ml-auto text-gap-muted" />}
       </button>
 
       {aberto && (
-        <div className="mt-3">
-          <div className="flex items-center text-[10.5px] text-gap-muted mb-1">
-            <span className="w-[118px] shrink-0">categoria</span>
-            <span className="flex-1" />
-            <span className="w-[78px] text-right">já contratado</span>
-            <span className="w-[78px] text-right">dia a dia</span>
-            <span className="w-[76px] text-right">total</span>
+        <div className="mt-2.5">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10.5px] text-gap-muted mb-2">
+            <Chip estilo={solido}>já gastou</Chip>
+            <Chip estilo={contratado}>já contratado</Chip>
+            <Chip estilo={estimado}>estimativa do resto do ciclo</Chip>
           </div>
+
+          <div className="flex items-center text-[10.5px] text-gap-muted mb-1">
+            <span className="w-[110px] shrink-0">categoria</span>
+            <span className="flex-1" />
+            <span className="w-[66px] text-right">já gastou</span>
+            <span className="w-[66px] text-right">contratado</span>
+            <span className="w-[66px] text-right">estimado</span>
+            <span className="w-[72px] text-right">no fim</span>
+          </div>
+
           {linhas.map((l) => (
             <div key={l.cat} className="flex items-center text-[12px] py-[3px]">
-              <span className="w-[118px] shrink-0 truncate" title={l.cat}>{l.cat}</span>
+              <span className="w-[110px] shrink-0 truncate" title={l.cat}>{l.cat}</span>
               <span className="flex-1 px-2">
-                <span className="flex h-[14px] rounded-sm overflow-hidden bg-gap-soft"
-                  style={{ width: `${(l.total_cents / max) * 100}%` }}>
-                  {/* navy = certo, cinza = estimado */}
-                  <span style={{ flex: l.fixo_cents, background: GAP.navy }} />
-                  <span style={{ flex: l.variavel_cents, background: '#cbd5e1' }} />
+                <span
+                  className="flex h-[14px] rounded-sm overflow-hidden"
+                  style={{ width: `${Math.max(0, (l.fatura_cents / max) * 100)}%` }}
+                >
+                  {/* estorno deixa a categoria negativa (Sem categoria, -R$ 223):
+                      flex negativo quebra o layout, entao a barra piso e zero e
+                      quem conta a historia e o numero */}
+                  <span style={{ flex: Math.max(0, l.ja_cents), ...solido }} />
+                  <span style={{ flex: Math.max(0, l.fixo_cents), ...contratado }} />
+                  <span style={{ flex: Math.max(0, l.variavel_cents), ...estimado }} />
                 </span>
               </span>
-              <span className="w-[78px] text-right num tabular-nums">
+              <span className="w-[66px] text-right num tabular-nums">
+                {l.ja_cents ? money(l.ja_cents, 0) : <span className="text-gap-muted">—</span>}
+              </span>
+              <span className="w-[66px] text-right num tabular-nums">
                 {l.fixo_cents ? money(l.fixo_cents, 0) : <span className="text-gap-muted">—</span>}
               </span>
-              <span className="w-[78px] text-right num tabular-nums text-gap-muted">
+              <span className="w-[66px] text-right num tabular-nums text-gap-muted">
                 {l.variavel_cents ? money(l.variavel_cents, 0) : '—'}
               </span>
-              <span className="w-[76px] text-right num tabular-nums font-semibold">
-                {money(l.total_cents, 0)}
+              <span className="w-[72px] text-right num tabular-nums font-semibold">
+                {money(l.fatura_cents, 0)}
               </span>
             </div>
           ))}
 
-          {v.a_entrar_itens?.length > 0 && (
-            <div className="mt-2.5 pt-2 border-t border-gap-border">
-              <div className="text-[10.5px] text-gap-muted mb-1">
-                Os {v.a_entrar_itens.length} recorrentes que ainda não postaram neste ciclo:
-              </div>
-              <div className="flex flex-wrap gap-x-3 gap-y-0.5">
-                {[...v.a_entrar_itens].sort((a, b) => b.cents - a.cents).map((s) => (
-                  <span key={s.key ?? s.label} className="text-[11px]">
-                    <span className="text-gap-muted">{s.label.slice(0, 24)}</span>{' '}
-                    <b className="num">{money(s.cents, 0)}</b>
-                  </span>
-                ))}
-              </div>
-            </div>
-          )}
           <div className="text-[10.5px] text-gap-muted mt-2">
-            O dia a dia é rateado pela distribuição do que você já gastou neste ciclo —
-            o total vem do agregado, que é o número confiável; a divisão entre categorias é indicativa.
+            Isto é só o <b>dia a dia</b>: não entram parcelas nem o recorrente que já postou —
+            esses estão no <b>travado</b>, que a meta desconta antes de sobrar teto pro dia a dia.
+            O <b>estimado</b> vem do total agregado ({moneyShort(varia)} para os{' '}
+            {v.goal?.dias_restantes ?? 0} dias que faltam) rateado pela distribuição do que você já
+            gastou neste ciclo — o total é o número confiável, a divisão entre categorias é
+            indicativa.
           </div>
         </div>
       )}
@@ -454,13 +482,6 @@ function AindaEntra({ v }) {
   )
 }
 
-/**
- * Lancamento manual que a fatura ja trouxe.
- *
- * Casado por valor exato + ate 3 dias, SEM exigir lojista — no manual voce
- * digita o app de entrega e o extrato traz o restaurante. Exigir semelhanca de
- * nome, como faz o reconcile do import, deixava passar tudo.
- */
 function Duplicados({ itens }) {
   const del = useDeleteTxn()
   const [busy, setBusy] = useState(null)

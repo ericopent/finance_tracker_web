@@ -1117,18 +1117,28 @@ export function monthView(ds, todayISO) {
       const porCat = new Map()
       const add = (cat, campo, cents) => {
         const c = cat || 'Sem categoria'
-        const g = porCat.get(c) ?? { cat: c, fixo_cents: 0, variavel_cents: 0 }
+        const g = porCat.get(c) ?? { cat: c, ja_cents: 0, fixo_cents: 0, variavel_cents: 0 }
         g[campo] += cents
         porCat.set(c, g)
       }
       for (const s of a_entrar_itens) add(s.category, 'fixo_cents', s.cents)
 
+      /*
+       * Duas somas diferentes de proposito.
+       *
+       *   ja_cents  TUDO que ja se gastou na categoria neste ciclo, evento
+       *             incluso. E fato consumado: a barra mostra isso.
+       *   base      o peso do rateio, SEM evento. Uma festa nao serve de
+       *             previsao pro resto do mes — se servisse, o rateio jogaria o
+       *             que falta desproporcionalmente na categoria da festa.
+       */
       const gastoCat = new Map()
       let base = 0
       for (const t of [...variavelNaFatura, ...loggedTxns]) {
-        if (t.event) continue // evento nao se repete: nao serve de peso pro resto
         const c = t.cat || 'Sem categoria'
         const v = outflow(t.kind, t.cents)
+        add(c, 'ja_cents', v)
+        if (t.event) continue // evento nao se repete: nao serve de peso pro resto
         gastoCat.set(c, (gastoCat.get(c) ?? 0) + v)
         base += v
       }
@@ -1138,9 +1148,18 @@ export function monthView(ds, todayISO) {
         add('Sem categoria', 'variavel_cents', remaining.p50)
       }
       return [...porCat.values()]
-        .map((g) => ({ ...g, total_cents: g.fixo_cents + g.variavel_cents }))
-        .filter((g) => g.total_cents !== 0)
-        .sort((a, b) => b.total_cents - a.total_cents)
+        .map((g) => ({
+          ...g,
+          total_cents: g.fixo_cents + g.variavel_cents,
+          // o que a FATURA vai ter nesta categoria quando fechar. Nome
+          // diferente do `projetado_cents` da regua da meta de proposito: aquele
+          // e so a parte variavel (a meta ja desconta o travado por cima), este
+          // inclui o recorrente que ainda nao postou. Mesma palavra pros dois
+          // seria a terceira vez que essa tela mente com sinonimo.
+          fatura_cents: g.ja_cents + g.fixo_cents + g.variavel_cents,
+        }))
+        .filter((g) => g.total_cents !== 0 || g.ja_cents !== 0)
+        .sort((a, b) => b.fatura_cents - a.fatura_cents)
     })(),
     goal: goalView({
       config, elapsed_share, fixed_outflow_cents, ja_na_fatura_cents, a_entrar_cents,
