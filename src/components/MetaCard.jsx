@@ -43,10 +43,18 @@ function LinhaCategoria({ c, elapsed, maiorConsumo }) {
   const cor = semMeta ? '#94a3b8' : estourou ? GAP.red : alerta ? '#f59e0b' : GAP.blue
 
   return (
-    <div className="flex items-center gap-2.5 text-[12px] py-1">
-      <span className="w-[104px] shrink-0 truncate" title={c.cat}>{c.cat}</span>
+    /*
+     * Duas linhas no celular, uma no desktop.
+     *
+     * Em 390px a barra dividia o espaco com o nome e dois numeros e sobrava um
+     * risco de 8px — ela deixava de ser grafico e virava ruido. Com `basis-full`
+     * ela desce pra propria linha e usa a largura toda; no desktop volta pro
+     * meio, onde sempre coube.
+     */
+    <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[12px] py-1">
+      <span className="w-[86px] sm:w-[104px] shrink-0 truncate" title={c.cat}>{c.cat}</span>
 
-      <div className="flex-1 relative h-[18px] bg-gap-soft rounded-sm overflow-hidden">
+      <div className="order-last sm:order-none basis-full sm:basis-auto sm:flex-1 relative h-[9px] sm:h-[18px] bg-gap-soft rounded-sm overflow-hidden">
         <div className="absolute inset-y-0 left-0 flex transition-[width] duration-500"
              style={{ width: `${Math.min(100, share * 100)}%` }}>
           <div className="h-full" style={{ flex: Math.max(shareJa, 0.0001), background: cor }} />
@@ -70,7 +78,7 @@ function LinhaCategoria({ c, elapsed, maiorConsumo }) {
         )}
       </div>
 
-      <span className="w-[104px] shrink-0 text-right num tabular-nums"
+      <span className="flex-1 sm:flex-none sm:w-[104px] text-right num tabular-nums whitespace-nowrap"
             title={`já gastou ${money(c.consumido_cents)} · no fim do ciclo ${money(c.projetado_cents)}`}>
         {moneyShort(c.consumido_cents)}
         <span className="text-gap-muted">{' → '}{moneyShort(c.projetado_cents)}</span>
@@ -83,7 +91,7 @@ function LinhaCategoria({ c, elapsed, maiorConsumo }) {
       */}
       <span
         className={clsx(
-          'w-[86px] shrink-0 text-right num text-[11.5px]',
+          'w-[70px] sm:w-[86px] shrink-0 text-right num text-[11.5px] whitespace-nowrap',
           semMeta ? 'text-gap-muted'
             : c.distancia_cents > 0 ? 'text-gap-red font-semibold' : 'text-gap-green'
         )}
@@ -306,14 +314,18 @@ export default function MetaCard({ v }) {
           )}
           <div className="flex items-center text-[10.5px] text-gap-muted mb-1.5">
             <span className="flex-1">
-              <span className="inline-flex items-center gap-1 mr-2">
-                <span className="inline-block w-2.5 h-2.5 rounded-[2px] align-middle" style={{ background: GAP.blue }} />
-                já gastou
-                <span className="inline-block w-2.5 h-2.5 rounded-[2px] align-middle ml-1.5"
-                      style={{ background: `repeating-linear-gradient(45deg, ${GAP.blue} 0 3px, transparent 3px 6px)`, opacity: 0.55 }} />
-                ainda vai entrar
+              <span className="flex flex-wrap items-center gap-x-3 gap-y-0.5">
+                <span className="inline-flex items-center gap-1">
+                  <span className="inline-block w-2.5 h-2.5 rounded-[2px]" style={{ background: GAP.blue }} />
+                  já gastou
+                </span>
+                <span className="inline-flex items-center gap-1">
+                  <span className="inline-block w-2.5 h-2.5 rounded-[2px]"
+                        style={{ background: `repeating-linear-gradient(45deg, ${GAP.blue} 0 3px, transparent 3px 6px)`, opacity: 0.55 }} />
+                  ainda vai entrar
+                </span>
+                <span>traço = <b className="text-gap-navy">{brNum(v.elapsed_share * 100, 0)}%</b> do ciclo</span>
               </span>
-              · o traço marca os <b className="text-gap-navy">{brNum(v.elapsed_share * 100, 0)}%</b> do ciclo decorrido
             </span>
             <span className="w-[86px] text-right">{temMeta ? 'sobra/estouro' : 'fecha em'}</span>
           </div>

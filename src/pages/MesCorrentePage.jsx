@@ -428,21 +428,23 @@ function AindaEntra({ v }) {
             <Chip estilo={estimado}>estimativa do resto do ciclo</Chip>
           </div>
 
-          <div className="flex items-center text-[10.5px] text-gap-muted mb-1">
-            <span className="w-[110px] shrink-0">categoria</span>
-            <span className="flex-1" />
-            <span className="w-[66px] text-right">já gastou</span>
-            <span className="w-[66px] text-right">contratado</span>
-            <span className="w-[66px] text-right">estimado</span>
-            <span className="w-[72px] text-right">no fim</span>
+          {/* no celular so cabem duas colunas de numero; as duas do meio ja
+              estao desenhadas nos segmentos da barra */}
+          <div className="flex flex-wrap items-center text-[10.5px] text-gap-muted mb-1">
+            <span className="w-[86px] sm:w-[110px] shrink-0">categoria</span>
+            <span className="hidden sm:block flex-1" />
+            <span className="flex-1 sm:flex-none sm:w-[66px] text-right">já gastou</span>
+            <span className="hidden sm:block w-[66px] text-right">contratado</span>
+            <span className="hidden sm:block w-[66px] text-right">estimado</span>
+            <span className="w-[70px] sm:w-[72px] text-right">no fim</span>
           </div>
 
           {linhas.map((l) => (
-            <div key={l.cat} className="flex items-center text-[12px] py-[3px]">
-              <span className="w-[110px] shrink-0 truncate" title={l.cat}>{l.cat}</span>
-              <span className="flex-1 px-2">
+            <div key={l.cat} className="flex flex-wrap items-center gap-y-0.5 text-[12px] py-[3px]">
+              <span className="w-[86px] sm:w-[110px] shrink-0 truncate" title={l.cat}>{l.cat}</span>
+              <span className="order-last sm:order-none basis-full sm:basis-auto sm:flex-1 sm:px-2">
                 <span
-                  className="flex h-[14px] rounded-sm overflow-hidden"
+                  className="flex h-[9px] sm:h-[14px] rounded-sm overflow-hidden"
                   style={{ width: `${Math.max(0, (l.fatura_cents / max) * 100)}%` }}
                 >
                   {/* estorno deixa a categoria negativa (Sem categoria, -R$ 223):
@@ -453,16 +455,16 @@ function AindaEntra({ v }) {
                   <span style={{ flex: Math.max(0, l.variavel_cents), ...estimado }} />
                 </span>
               </span>
-              <span className="w-[66px] text-right num tabular-nums">
+              <span className="flex-1 sm:flex-none sm:w-[66px] text-right num tabular-nums whitespace-nowrap">
                 {l.ja_cents ? money(l.ja_cents, 0) : <span className="text-gap-muted">—</span>}
               </span>
-              <span className="w-[66px] text-right num tabular-nums">
+              <span className="hidden sm:block w-[66px] text-right num tabular-nums">
                 {l.fixo_cents ? money(l.fixo_cents, 0) : <span className="text-gap-muted">—</span>}
               </span>
-              <span className="w-[66px] text-right num tabular-nums text-gap-muted">
+              <span className="hidden sm:block w-[66px] text-right num tabular-nums text-gap-muted">
                 {l.variavel_cents ? money(l.variavel_cents, 0) : '—'}
               </span>
-              <span className="w-[72px] text-right num tabular-nums font-semibold">
+              <span className="w-[70px] sm:w-[72px] text-right num tabular-nums font-semibold whitespace-nowrap">
                 {money(l.fatura_cents, 0)}
               </span>
             </div>
