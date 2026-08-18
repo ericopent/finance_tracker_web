@@ -9,7 +9,6 @@ import MetaCard from '../components/MetaCard'
 
 import { useMonthView, useDeleteTxn, useConfirmRecurring, useDismissRecurring, useRemoveRecurring, useCancelRecurring, useReimburseRecurring, useMarkEvent } from '../lib/api'
 import { clearAuth } from '../lib/github'
-import { isoAddDays } from '../lib/engine'
 import { GAP, money, moneyShort, moneySigned, monthLabel, brNum } from '../theme/gap'
 
 /** Barra de composicao do mes: travado -> lancado -> projetado. */
@@ -670,7 +669,7 @@ export default function MesCorrentePage() {
             // o ciclo NAO fecha no fim do mes: a borda vem da fatura anterior
             // (ver ciclo_inicio no engine) e cai por volta do dia 28
             ? `Vence dia 5. ${v.ciclo_inicio
-                ? `Ciclo de ${diaMes(v.ciclo_inicio)} a ${diaMes(isoAddDays(v.ciclo_inicio, 29))}`
+                ? `Fecha ${diaMes(v.ciclo_fim)}, o último dia útil`
                 : `Fecha com o que você gastar até o fim de ${monthLabel(v.month)}`} — ` +
               `${brNum(v.elapsed_share * 100, 0)}% do ciclo já passou.`
             : `Fatura em formação com os gastos de ${monthLabel(v.month)}. ` +
