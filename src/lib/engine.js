@@ -41,6 +41,16 @@ export function monthDiff(from, to) {
   return p(to) - p(from)
 }
 
+/** Soma dias a um ISO YYYY-MM-DD. UTC nos dois sentidos, senao o fuso rouba um dia. */
+export function isoAddDays(iso, k) {
+  return new Date(Date.parse(`${iso}T00:00:00Z`) + k * 86400000).toISOString().slice(0, 10)
+}
+
+/** Dias corridos entre dois ISO. */
+export function isoDiffDays(a, b) {
+  return Math.round((Date.parse(`${b}T00:00:00Z`) - Date.parse(`${a}T00:00:00Z`)) / 86400000)
+}
+
 export function daysInMonth(year, month) {
   return new Date(year, month, 0).getDate()
 }
@@ -648,7 +658,7 @@ const DIAS_CICLO = 30
  */
 function goalView({ config, elapsed_share, fixed_outflow_cents, ja_na_fatura_cents,
                     a_entrar_cents, variavelTxns, restante_variavel_cents,
-                    travado_cents, reembolso_cents, todayISO }) {
+                    travado_cents, reembolso_cents, ciclo_inicio, todayISO }) {
   const meta = config?.budget
   if (!meta?.total_cents) return null
 
@@ -681,18 +691,36 @@ function goalView({ config, elapsed_share, fixed_outflow_cents, ja_na_fatura_cen
    *   sobra  -> desconta o que provavelmente ja foi gasto e ainda nao postou.
    *             Sem isso o app anuncia folga que nao existe, todo dia.
    */
-  const datas = rotinaTxns.map((t) => t.date).filter(Boolean).sort()
-  const inicio = datas[0]
+  /*
+   * O RITMO so pode olhar o que caiu DENTRO do ciclo.
+   *
+   * Compra atrasada entra nesta fatura carregando a data original — 11 delas,
+   * de 19 e 29/07, num ciclo que comecou em 30/07. Elas sao gasto desta fatura
+   * (o dinheiro sai) mas nao sao gasto DESTES dias, e a janela ia de 19/07 a
+   * 16/08: 29 dias em vez de 18. O ritmo saia ~35% menor que o real, e o
+   * "posso gastar por dia" prometia folga que nao existe.
+   *
+   * Entao: o total da fatura conta tudo; a divisao que produz R$/dia conta so o
+   * que aconteceu na janela do ciclo.
+   */
+  const dentroDoCiclo = ciclo_inicio ? rotinaTxns.filter((t) => t.date >= ciclo_inicio) : rotinaTxns
+  const datas = dentroDoCiclo.map((t) => t.date).filter(Boolean).sort()
+  const inicio = ciclo_inicio ?? datas[0]
   const ultimo = datas[datas.length - 1]
   const dias = (a, b) => Math.round((Date.parse(`${b}T00:00:00`) - Date.parse(`${a}T00:00:00`)) / 86400000)
 
   const dias_corridos = Math.min(DIAS_CICLO, Math.max(1, Math.round(elapsed_share * DIAS_CICLO)))
-  const dias_com_dado = inicio && ultimo ? Math.max(1, dias(inicio, ultimo) + 1) : dias_corridos
+  const dias_com_dado = inicio && ultimo
+    ? Math.max(1, Math.min(dias_corridos, dias(inicio, ultimo) + 1))
+    : dias_corridos
   const dias_sem_dado = Math.max(0, dias_corridos - dias_com_dado)
   // +1: hoje ainda conta como dia de gasto — e evita divisao por zero no ultimo dia
   const dias_restantes = Math.max(1, DIAS_CICLO - dias_corridos + 1)
 
-  const ritmo_cents = Math.round(variavel_cents / dias_com_dado)
+  const ritmo_base_cents = dentroDoCiclo.reduce((a, t) => a + outflow(t.kind, t.cents), 0)
+  const ritmo_cents = Math.round(ritmo_base_cents / dias_com_dado)
+  // o que veio atrasado ja esta na fatura e nao se repete: fora do ritmo
+  const atrasado_cents = variavel_cents - ritmo_base_cents
   const nao_postado_cents = ritmo_cents * dias_sem_dado
   const disponivel_cents = teto_fatura_cents - ja_na_fatura_cents - a_entrar_cents - nao_postado_cents
   const comprometido_cents = ja_na_fatura_cents + a_entrar_cents + nao_postado_cents
@@ -766,7 +794,7 @@ function goalView({ config, elapsed_share, fixed_outflow_cents, ja_na_fatura_cen
     meta_total_cents: meta.total_cents,
     teto_fatura_cents, comprometido_cents, disponivel_cents,
     dias_ciclo: DIAS_CICLO, dias_corridos, dias_restantes, dias_com_dado, dias_sem_dado,
-    nao_postado_cents, eventos_cents,
+    nao_postado_cents, eventos_cents, atrasado_cents, ciclo_inicio,
     variavel_cents, ritmo_cents, por_dia_cents, no_ritmo_cents,
     distancia_cents: no_ritmo_cents - meta.total_cents,
     categorias,
@@ -918,18 +946,42 @@ export function monthView(ds, todayISO) {
    * mes), nao pelo dia do mes-calendario: o ciclo do cartao vai do dia 30 ao 29,
    * entao "dia 14 do mes" e ~50% do ciclo, nao 45% dele.
    */
+  /*
+   * Onde o ciclo COMECOU — e por que nao e o minimo das datas.
+   *
+   * Compra posta com atraso: uma compra de 19/07 que so foi processada depois do
+   * fechamento cai na fatura SEGUINTE carregando a data original. Tomar o minimo
+   * fazia 11 lancamentos atrasados puxarem o inicio do ciclo 11 dias pra tras, e
+   * no dia 18 o app anunciava "100% do ciclo decorrido". Consequencia direta: o
+   * que ainda falta do dia a dia (nivel x fatia restante) dava ZERO — metro,
+   * Uber e almoco dos 11 dias que faltavam simplesmente nao eram projetados, e a
+   * fatura estimada saia menor do que ela vem.
+   *
+   * A borda confiavel e a fatura ANTERIOR: o ultimo lancamento dela e o
+   * fechamento, e atraso empurra pra frente, nunca pra tras. Medido no historico
+   * deste cartao, a borda da de 07/26 -> 28/06 e a de 08/26 fecha em 29/07: 31
+   * dias, um ciclo redondo. O minimo das datas erra nas duas.
+   */
   let elapsed_share = null
+  let ciclo_inicio = null
   if (temFaturaAberta) {
-    // SEM parcelado: a linha parcelada carrega a data ORIGINAL da compra, entao
-    // usar o minimo de todas dava "ciclo comecou em out/2025" e 100% decorrido.
-    const datas = naFaturaAberta.filter((t) => t.igrp == null).map((t) => t.date).sort()
-    const inicio = datas[0]
-    if (inicio) {
-      const dias = Math.round(
-        (Date.parse(`${todayISO}T00:00:00`) - Date.parse(`${inicio}T00:00:00`)) / 86400000
-      )
+    const fimAnterior = txns
+      .filter((t) => t.cash === monthAdd(fatura_alvo, -1) && t.source === 'import' && t.igrp == null)
+      .map((t) => t.date)
+      .sort()
+      .pop()
+    if (fimAnterior) ciclo_inicio = isoAddDays(fimAnterior, 1)
+
+    // sem fatura anterior importada, cai no minimo — melhor que nada, e o
+    // guarda de 0-45 dias impede que um atrasado antigo estrague tudo
+    if (!ciclo_inicio) {
+      ciclo_inicio = naFaturaAberta.filter((t) => t.igrp == null).map((t) => t.date).sort()[0] ?? null
+    }
+    if (ciclo_inicio) {
+      const dias = isoDiffDays(ciclo_inicio, todayISO)
       // fora de 0-45 dias o ciclo nao faz sentido; cai no metodo antigo
       if (dias >= 0 && dias <= 45) elapsed_share = Math.min(1, dias / 30)
+      else ciclo_inicio = null
     }
   }
   if (elapsed_share === null) {
@@ -1024,7 +1076,7 @@ export function monthView(ds, todayISO) {
     realizado_cents, manual_cents, tem_fatura_aberta: temFaturaAberta,
     remaining, fatura, total, income_cents, fixed_outflow_cents, fixed_card_cents, net,
     ja_na_fatura_cents, a_entrar_cents,
-    baseline_cents, last_statement: last, fatura_alvo, em_curso: emCurso,
+    baseline_cents, last_statement: last, fatura_alvo, em_curso: emCurso, ciclo_inicio,
     nivel_regime: nivelInfo.regime, a_entrar_itens,
 
     /*
@@ -1076,6 +1128,7 @@ export function monthView(ds, todayISO) {
     goal: goalView({
       config, elapsed_share, fixed_outflow_cents, ja_na_fatura_cents, a_entrar_cents,
       variavelTxns: [...variavelNaFatura, ...loggedTxns], todayISO, reembolso_cents,
+      ciclo_inicio,
       // a MESMA fatia que o card "ainda deve entrar" rateia, pra os dois cards
       // da mesma tela nao darem numeros diferentes pro mesmo gasto
       restante_variavel_cents: remaining.p50,

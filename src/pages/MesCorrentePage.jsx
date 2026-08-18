@@ -9,6 +9,7 @@ import MetaCard from '../components/MetaCard'
 
 import { useMonthView, useDeleteTxn, useConfirmRecurring, useDismissRecurring, useRemoveRecurring, useCancelRecurring, useReimburseRecurring, useMarkEvent } from '../lib/api'
 import { clearAuth } from '../lib/github'
+import { isoAddDays } from '../lib/engine'
 import { GAP, money, moneyShort, moneySigned, monthLabel, brNum } from '../theme/gap'
 
 /** Barra de composicao do mes: travado -> lancado -> projetado. */
@@ -618,6 +619,12 @@ function Recorrentes({ v }) {
 }
 
 
+/** '2026-07-30' -> '30/07' */
+function diaMes(iso) {
+  const [, m, d] = iso.split('-')
+  return `${d}/${m}`
+}
+
 export default function MesCorrentePage() {
   const { data: v, isLoading, error } = useMonthView()
   const del = useDeleteTxn()
@@ -660,7 +667,11 @@ export default function MesCorrentePage() {
         title={`Fatura de ${monthLabel(v.fatura_alvo)}${v.tem_fatura_aberta ? ' · em aberto' : ''}`}
         subtitle={
           v.tem_fatura_aberta
-            ? `Vence dia 5. Fecha com o que você gastar até o fim de ${monthLabel(v.month)} — ` +
+            // o ciclo NAO fecha no fim do mes: a borda vem da fatura anterior
+            // (ver ciclo_inicio no engine) e cai por volta do dia 28
+            ? `Vence dia 5. ${v.ciclo_inicio
+                ? `Ciclo de ${diaMes(v.ciclo_inicio)} a ${diaMes(isoAddDays(v.ciclo_inicio, 29))}`
+                : `Fecha com o que você gastar até o fim de ${monthLabel(v.month)}`} — ` +
               `${brNum(v.elapsed_share * 100, 0)}% do ciclo já passou.`
             : `Fatura em formação com os gastos de ${monthLabel(v.month)}. ` +
               `Importe a fatura aberta para ver o valor real em vez de estimativa.`
