@@ -342,6 +342,28 @@ export function declaredRecurring(config, direction) {
     .sort((a, b) => b.cents - a.cents)
 }
 
+/**
+ * Chaves de recorrente CANCELADO — assinatura que deixou de existir.
+ *
+ * "Nao e recorrente" e "cancelei" desligam a mesma flag e pedem tratamentos
+ * OPOSTOS no variavel. No primeiro caso o gasto continua acontecendo, so nao e
+ * mensal: ele tem que voltar pro bolo do dia a dia. No segundo ele acabou, e
+ * deixar o historico dentro do nivel projeta um custo que nao vai existir.
+ *
+ * Sem esta lista, cancelar a Anthropic (R$ 581/mes) derrubava a projecao em
+ * R$ 145: os R$ 436 restantes reapareciam no mes seguinte diluidos como gasto
+ * variavel, porque a chave saia do `exclude` junto com o `active`.
+ *
+ * Vale so pra frente. O que ja esta na fatura ABERTA continua contando no
+ * realizado — a cobranca aconteceu, o dinheiro saiu.
+ */
+export function cancelledKeys(config) {
+  return (config?.recurring ?? [])
+    .filter((r) => r.cancelled && !r.active)
+    .map((r) => r.key)
+    .filter(Boolean)
+}
+
 // ---------------------------------------------------------------- 3. discricionario
 
 /**
@@ -738,7 +760,17 @@ export function monthView(ds, todayISO) {
   const declaredKeys = new Set(
     declaredRecurring(config, 'outflow').map((r) => r.key).filter(Boolean)
   )
-  const detected = detectSubscriptions(txns, last).filter((s) => !declaredKeys.has(s.key))
+  /*
+   * Cancelado tem que calar o DETECTOR, nao so o cadastro.
+   *
+   * Assinatura detectada nao tem linha no config — ela nasce do historico. Sem
+   * este filtro, marcar SCRAPFLY como cancelada nao mudava nada: os 5 dos 6
+   * ultimos meses continuavam la, o detector reconhecia o padrao e recolocava
+   * os R$ 162 no travado, todo mes, pra sempre.
+   */
+  const canceladas = new Set(cancelledKeys(config))
+  const detected = detectSubscriptions(txns, last)
+    .filter((s) => !declaredKeys.has(s.key) && !canceladas.has(s.key))
   const subscriptions_cents = detected.reduce((a, s) => a + s.cents, 0)
   // sem isso a assinatura conta duas vezes: travada aqui e diluida na projecao
   const exclude = detected.map((s) => s.key)
@@ -764,7 +796,12 @@ export function monthView(ds, todayISO) {
    * na distribuicao do variavel — contados duas vezes.
    */
   const exSet = new Set([...exclude, ...fixedNoCartao.map((r) => r.key).filter(Boolean)])
-  const excludeTudo = [...exSet]
+  /*
+   * Duas listas, de proposito. `exSet` protege o REALIZADO de contar duas vezes
+   * e para por ai; `excludeTudo` e a base do que se PROJETA, e ai entra tambem
+   * o cancelado — a cobranca de ontem e fato, a de amanha nao vai existir.
+   */
+  const excludeTudo = [...new Set([...exSet, ...cancelledKeys(config)])]
 
   /*
    * MESMA base do fluxo de caixa. Antes daqui saia a mediana de 12 meses e de
@@ -1086,7 +1123,9 @@ export function cashflow(ds, fromMonth, horizon = 12, openingCents = 0, todayISO
   const fixedAll = declaredRecurring(config, 'outflow')
   // mesma deduplicacao do monthView: declarado ganha, detectado sai da lista
   const declaredKeys = new Set(fixedAll.map((r) => r.key).filter(Boolean))
-  const detected = detectSubscriptions(txns, last).filter((s) => !declaredKeys.has(s.key))
+  const canceladas = new Set(cancelledKeys(config))  // ver monthView
+  const detected = detectSubscriptions(txns, last)
+    .filter((s) => !declaredKeys.has(s.key) && !canceladas.has(s.key))
 
   /*
    * Mesma exclusao do monthView, e pela mesma razao.
@@ -1098,6 +1137,7 @@ export function cashflow(ds, fromMonth, horizon = 12, openingCents = 0, todayISO
   const exclude = [...new Set([
     ...detected.map((s) => s.key),
     ...fixedAll.map((r) => r.key).filter(Boolean),
+    ...canceladas,  // cancelada nao volta pelo variavel: ela deixou de existir
   ])]
   const subs = detected.reduce((a, s) => a + s.cents, 0)
   const fixed = fixedAll.reduce((a, s) => a + s.cents, 0)
@@ -1188,4 +1228,148 @@ export function cashflow(ds, fromMonth, horizon = 12, openingCents = 0, todayISO
     })
   }
   return out
+}
+
+// ---------------------------------------------------------------- 5. plano de objetivo
+
+/** Parcela pelo sistema Price. juros = taxa MENSAL decimal (0.0349 = 3,49% a.m.). */
+export function pmt(pv, juros, n) {
+  if (n <= 0) return 0
+  if (!juros) return pv / n
+  const f = Math.pow(1 + juros, -n)
+  return (pv * juros) / (1 - f)
+}
+
+/**
+ * Plano de objetivo — "quanto preciso guardar por mes pra bancar isto".
+ *
+ * A pergunta parece ser "20 mil dividido por quantos meses faltam", e nao e.
+ * Parcelar muda o problema de lugar: o dinheiro nao precisa estar todo la no
+ * mes da compra, precisa estar la NO MES DE CADA PARCELA. Entao o esforco
+ * mensal nao e o valor da parcela nem o valor total dividido pelo prazo — e o
+ * menor aporte constante que mantem o bolso do plano sempre positivo:
+ *
+ *     aporte = max sobre os meses de parcela de  ( parcelas acumuladas / aportes feitos )
+ *
+ * O maximo, e nao a media, porque um plano que fecha no fim mas fura em marco
+ * nao fecha: em marco voce paga a parcela com o limite do cartao, que e onde a
+ * viagem barata vira cara. O mes que aperta e o que manda no numero.
+ *
+ * Concretamente, R$ 20k em dezembro: a vista sao R$ 5.000/mes por 4 meses; em
+ * 10x sao R$ 1.538/mes por 13. Mesmo dinheiro, esforco mensal 3x menor — o
+ * preco e ficar 13 meses no plano em vez de 4.
+ *
+ * `pts` = saida do cashflow(), a partir do primeiro mes em que da pra guardar.
+ */
+export function goalPlan(pts, {
+  valor_cents,
+  mes_compra,          // mes em que passa no cartao
+  parcelas = 1,
+  juros_mes = 0,       // 0 = sem juros (o caso do "10x sem juros" da agencia)
+  guardado_cents = 0,  // o que ja esta separado hoje
+  max_alternativas = 12,
+}) {
+  if (!pts?.length || !valor_cents || !mes_compra) return null
+
+  /*
+   * Compra de dezembro cai na fatura de JANEIRO — a mesma regra do monthView.
+   * Nao e detalhe: e um mes inteiro a mais de folga pra juntar, e errar isso
+   * antecipa o aperto justamente no mes em que ele nao existe.
+   */
+  const primeira_fatura = monthAdd(mes_compra, 1)
+
+  const plano = (n) => {
+    const parcela = Math.round(pmt(valor_cents, juros_mes, n))
+    const total = parcela * n
+    // a ultima parcela absorve o arredondamento, pra soma bater com o total
+    const ultima = valor_cents === total ? parcela : parcela + (Math.round(pmt(valor_cents, juros_mes, n) * n) - total)
+
+    const devido = new Map()
+    for (let k = 0; k < n; k++) {
+      devido.set(monthAdd(primeira_fatura, k), k === n - 1 ? ultima : parcela)
+    }
+
+    /*
+     * O aporte minimo. `i + 1` porque o aporte do proprio mes ja conta: a
+     * fatura vence dia 5 e o salario cai antes dela — o mes em que voce guarda
+     * e o mes em que voce paga.
+     */
+    let acumulado = 0
+    let aporte = 0
+    let ultimo_mes = null
+    pts.forEach((p, i) => {
+      const dev = devido.get(p.month)
+      if (!dev) return
+      acumulado += dev
+      ultimo_mes = p.month
+      const preciso = (acumulado - guardado_cents) / (i + 1)
+      if (preciso > aporte) aporte = preciso
+    })
+    // parcela que cai fora do horizonte projetado: o plano nao esta coberto
+    const cobertas = [...devido.keys()].filter((m) => pts.some((p) => p.month === m)).length
+
+    return {
+      parcelas: n,
+      parcela_cents: parcela,
+      total_cents: valor_cents + (juros_mes ? total - valor_cents : 0),
+      juros_cents: juros_mes ? total - valor_cents : 0,
+      aporte_cents: Math.ceil(aporte),
+      devido,
+      ultimo_mes,
+      truncado: cobertas < n,
+    }
+  }
+
+  const p = plano(parcelas)
+
+  const meses = pts.map((row, i) => {
+    const parcela_cents = p.devido.get(row.month) ?? 0
+    return {
+      month: row.month,
+      parcela_cents,
+      net_p50: row.net.p50,
+      net_p10: row.net.p10,
+      // o que sobra DEPOIS de honrar a parcela: o numero que diz se aperta
+      apos_p50: row.net.p50 - parcela_cents,
+      apos_p10: row.net.p10 - parcela_cents,
+      aporte_cents: i < pts.findIndex((x) => x.month === p.ultimo_mes) + 1 ? p.aporte_cents : 0,
+    }
+  })
+
+  const janela = meses.slice(0, pts.findIndex((x) => x.month === p.ultimo_mes) + 1)
+  const sobra_media = janela.length
+    ? Math.round(janela.reduce((a, m) => a + m.net_p50, 0) / janela.length)
+    : 0
+  const apertados = janela.filter((m) => m.apos_p50 < 0).map((m) => m.month)
+
+  return {
+    ...p,
+    valor_cents,
+    mes_compra,
+    primeira_fatura,
+    guardado_cents,
+    juros_mes,
+    meses,
+    aportes_n: janela.length,
+    sobra_media_cents: sobra_media,
+    folga_cents: sobra_media - p.aporte_cents,
+    // "cabe" = o aporte exigido entra na sobra projetada, com a viagem ja dentro
+    cabe: p.aporte_cents <= sobra_media,
+    meses_apertados: apertados,
+    alternativas: Array.from({ length: max_alternativas }, (_, k) => {
+      const alt = plano(k + 1)
+      const jan = pts.slice(0, pts.findIndex((x) => x.month === alt.ultimo_mes) + 1)
+      const media = jan.length ? Math.round(jan.reduce((a, m) => a + m.net.p50, 0) / jan.length) : 0
+      return {
+        parcelas: alt.parcelas,
+        parcela_cents: alt.parcela_cents,
+        aporte_cents: alt.aporte_cents,
+        meses_de_plano: jan.length,
+        sobra_media_cents: media,
+        folga_cents: media - alt.aporte_cents,
+        cabe: alt.aporte_cents <= media,
+        truncado: alt.truncado,
+      }
+    }),
+  }
 }

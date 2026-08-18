@@ -1,9 +1,10 @@
 import { useState } from 'react'
 import { NavLink, Routes, Route, Navigate } from 'react-router-dom'
-import { CalendarDays, LineChart, Upload, Tag, LogOut } from 'lucide-react'
+import { CalendarDays, LineChart, Target, Upload, Tag, LogOut } from 'lucide-react'
 import clsx from 'clsx'
 import MesCorrentePage from './pages/MesCorrentePage'
 import FluxoPage from './pages/FluxoPage'
+import PlanoPage from './pages/PlanoPage'
 import ImportarPage from './pages/ImportarPage'
 import ClassificarPage from './pages/ClassificarPage'
 import LoginPage from './pages/LoginPage'
@@ -12,6 +13,7 @@ import { getToken, clearAuth } from './lib/github'
 const NAV = [
   { to: '/mes', label: 'Mês', icon: CalendarDays },
   { to: '/fluxo', label: 'Fluxo', icon: LineChart },
+  { to: '/plano', label: 'Plano', icon: Target },
   { to: '/classificar', label: 'Classificar', icon: Tag },
   { to: '/importar', label: 'Importar', icon: Upload },
 ]
@@ -78,6 +80,7 @@ export default function App() {
           <Route path="/" element={<Navigate to="/mes" replace />} />
           <Route path="/mes" element={<MesCorrentePage />} />
           <Route path="/fluxo" element={<FluxoPage />} />
+          <Route path="/plano" element={<PlanoPage />} />
           <Route path="/classificar" element={<ClassificarPage />} />
           <Route path="/importar" element={<ImportarPage />} />
           <Route path="*" element={<Navigate to="/mes" replace />} />

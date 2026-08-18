@@ -7,7 +7,7 @@ import GapTable from '../components/GapTable'
 import QuickEntry from '../components/QuickEntry'
 import MetaCard from '../components/MetaCard'
 
-import { useMonthView, useDeleteTxn, useConfirmRecurring, useDismissRecurring, useRemoveRecurring, useMarkEvent } from '../lib/api'
+import { useMonthView, useDeleteTxn, useConfirmRecurring, useDismissRecurring, useRemoveRecurring, useCancelRecurring, useMarkEvent } from '../lib/api'
 import { clearAuth } from '../lib/github'
 import { GAP, money, moneyShort, moneySigned, monthLabel, brNum } from '../theme/gap'
 
@@ -507,6 +507,82 @@ function Duplicados({ itens }) {
   )
 }
 
+/**
+ * Recorrentes, com o botao de cancelar.
+ *
+ * Cancelar aqui e diferente de "nao e recorrente": aquilo devolve o gasto pro
+ * variavel (ele continua existindo, so nao e mensal), isto diz que ele acabou.
+ * Sem a distincao, cancelar uma assinatura de R$ 581 derrubava a projecao em
+ * R$ 145 e os outros R$ 436 voltavam no mes seguinte como gasto do dia a dia.
+ */
+function Recorrentes({ v }) {
+  const cancelar = useCancelRecurring()
+  const [busy, setBusy] = useState(null)
+  const [confirmar, setConfirmar] = useState(null)
+
+  const acao = async (r) => {
+    const id = r.key || r.id
+    if (confirmar !== id) { setConfirmar(id); return }
+    setBusy(id); setConfirmar(null)
+    try { await cancelar.mutateAsync(r) } catch { /* mostrado abaixo */ } finally { setBusy(null) }
+  }
+
+  return (
+    <div className="gap-card p-3.5">
+      <div className="text-[12px] font-semibold text-gap-navy mb-2 flex items-center gap-1.5">
+        <Repeat size={13} className="text-gap-muted" />
+        Recorrentes
+        <span className="ml-auto num text-gap-muted font-normal">
+          {money(v.subscriptions_cents + v.fixed_card_cents + v.fixed_outflow_cents)}
+        </span>
+      </div>
+      <GapTable
+        wrap maxHeight={300}
+        empty="nada recorrente detectado"
+        columns={[
+          { key: 'label', label: 'Item', align: 'left', fmt: (x) => <span className="truncate block max-w-[210px]" title={x}>{x}</span> },
+          { key: 'declared', label: 'Origem', fmt: (d, r) => d ? 'cadastrado' : `${r.months_seen}/6 meses` },
+          { key: 'cents', label: 'Valor', align: 'right', fmt: (c) => money(c) },
+          {
+            key: 'acao', label: '', align: 'right',
+            fmt: (_, r) => {
+              const id = r.key || r.id
+              if (busy === id) return <Loader2 size={13} className="animate-spin text-gap-blue inline" />
+              return (
+                <button
+                  className={clsx(
+                    'text-[10.5px] rounded px-1.5 py-0.5 border transition-colors whitespace-nowrap',
+                    confirmar === id
+                      ? 'border-gap-red text-white bg-gap-red font-semibold'
+                      : 'border-gap-border text-gap-muted hover:border-gap-red hover:text-gap-red'
+                  )}
+                  onClick={() => acao(r)}
+                  disabled={!!busy}
+                  title="para de contar daqui pra frente, sem mexer no que ja foi cobrado"
+                >
+                  {confirmar === id ? 'confirmar' : 'cancelei'}
+                </button>
+              )
+            },
+          },
+        ]}
+        rows={v.subscriptions.map((r) => ({ ...r, id: r.key || r.id || r.label }))}
+      />
+      <div className="text-[10.5px] text-gap-muted mt-2">
+        <b>Cancelei</b> tira o item das projeções daqui pra frente — do travado e do variável, e o
+        detector para de reencontrá-lo no histórico. O que já está na fatura aberta continua
+        contando: a cobrança aconteceu.
+      </div>
+      {cancelar.isError && (
+        <div className="text-[11px] text-gap-red mt-1.5">
+          não consegui salvar: {String(cancelar.error?.message ?? cancelar.error)}
+        </div>
+      )}
+    </div>
+  )
+}
+
+
 export default function MesCorrentePage() {
   const { data: v, isLoading, error } = useMonthView()
   const del = useDeleteTxn()
@@ -604,25 +680,7 @@ export default function MesCorrentePage() {
           />
         </div>
 
-        <div className="gap-card p-3.5">
-          <div className="text-[12px] font-semibold text-gap-navy mb-2 flex items-center gap-1.5">
-            <Repeat size={13} className="text-gap-muted" />
-            Recorrentes
-            <span className="ml-auto num text-gap-muted font-normal">
-              {money(v.subscriptions_cents + v.fixed_card_cents + v.fixed_outflow_cents)}
-            </span>
-          </div>
-          <GapTable
-            wrap maxHeight={300}
-            empty="nada recorrente detectado"
-            columns={[
-              { key: 'label', label: 'Item', align: 'left', fmt: (x) => <span className="truncate block max-w-[210px]" title={x}>{x}</span> },
-              { key: 'declared', label: 'Origem', fmt: (d, r) => d ? 'cadastrado' : `${r.months_seen}/6 meses` },
-              { key: 'cents', label: 'Valor', align: 'right', fmt: (c) => money(c) },
-            ]}
-            rows={v.subscriptions}
-          />
-        </div>
+        <Recorrentes v={v} />
       </div>
 
       <div className="mt-4"><Faixa v={v} /></div>

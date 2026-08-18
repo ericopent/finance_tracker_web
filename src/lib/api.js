@@ -230,6 +230,7 @@ function saveConfig(mutate, message) {
     cfg.rules ??= []
     cfg.budget ??= { total_cents: 0, categories: {} }
     cfg.events ??= {}
+    cfg.plan ??= null
     mutate(cfg)
   }, message, { recurring: [], rules: [], memory: {} })
 }
@@ -260,6 +261,63 @@ export function useSetBudget() {
         categories: categories ?? cfg.budget?.categories ?? {},
       }
     }, `meta do mês: ${((total_cents ?? 0) / 100).toFixed(2)}`)
+  )
+}
+
+/**
+ * Assinatura CANCELADA — diferente de "nao e recorrente".
+ *
+ * "Nao e recorrente" diz que o gasto nao e mensal, e ele volta pro variavel.
+ * "Cancelei" diz que ele deixou de existir: sai do travado E do variavel, e o
+ * detector para de reencontra-lo no historico. Sem essa distincao, cancelar uma
+ * assinatura de R$ 581 derrubava a projecao em R$ 145 — o resto voltava no mes
+ * seguinte disfarcado de gasto do dia a dia.
+ *
+ * Grava lapide tambem pra assinatura DETECTADA, que nao tem linha no config:
+ * e a unica forma de calar o detector, que so olha o extrato.
+ */
+export function useCancelRecurring() {
+  return useDatasetMutation((item) =>
+    saveConfig((cfg) => {
+      const key = item.key ?? item.label ?? item
+      /*
+       * Identidade por `key` quando existe, senao por `id`. Fixo cadastrado a
+       * mao (seguro, clube) nao tem merchant_key: filtrar por `key !== ''`
+       * apagaria TODOS eles de uma vez.
+       */
+      cfg.recurring = key
+        ? cfg.recurring.filter((r) => r.key !== key)
+        : cfg.recurring.filter((r) => r.id !== item.id)
+      cfg.recurring.push({
+        id: item.id ?? Date.now(), label: item.label ?? key, direction: 'outflow',
+        cents: 0, category: item.category ?? null, day: null, key: key || '',
+        active: false, confirmed: false, cancelled: true,
+      })
+    }, `cancelado: ${item.label ?? item.key ?? item}`)
+  )
+}
+
+/**
+ * Plano de objetivo (viagem, troca de carro...). Um so por vez, como a meta do
+ * mes: dois planos concorrendo pela mesma sobra pedem uma conta que ainda nao
+ * existe, e prometer isso na tela seria mentir.
+ */
+export function useSetPlan() {
+  return useDatasetMutation((plan) =>
+    saveConfig((cfg) => {
+      cfg.plan = plan?.valor_cents
+        ? {
+            label: plan.label ?? 'Objetivo',
+            valor_cents: Math.max(0, Math.round(plan.valor_cents)),
+            mes_compra: plan.mes_compra,
+            parcelas: Math.max(1, Math.round(plan.parcelas ?? 1)),
+            juros_mes: plan.juros_mes || 0,
+            guardado_cents: Math.max(0, Math.round(plan.guardado_cents ?? 0)),
+          }
+        : null
+    }, plan?.valor_cents
+      ? `plano: ${plan.label ?? 'objetivo'} ${(plan.valor_cents / 100).toFixed(2)} em ${plan.parcelas}x`
+      : 'remove o plano')
   )
 }
 
