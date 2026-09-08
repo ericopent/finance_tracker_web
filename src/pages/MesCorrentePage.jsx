@@ -474,9 +474,10 @@ function AindaEntra({ v }) {
             Isto é só o <b>dia a dia</b>: não entram parcelas nem o recorrente que já postou —
             esses estão no <b>travado</b>, que a meta desconta antes de sobrar teto pro dia a dia.
             O <b>estimado</b> vem do total agregado ({moneyShort(varia)} para os{' '}
-            {v.goal?.dias_restantes ?? 0} dias que faltam) rateado pela distribuição do que você já
-            gastou neste ciclo — o total é o número confiável, a divisão entre categorias é
-            indicativa.
+            {v.dias_ciclo - (v.pace?.dias_com_dado ?? 0)} dias que o extrato ainda não cobre)
+            rateado pela distribuição das últimas faturas fechadas, com o que você já gastou neste
+            ciclo entrando aos poucos — o total é o número confiável, a divisão entre categorias é
+            indicativa. Compra marcada como <b>evento</b> fica fora do rateio e do ritmo.
           </div>
         </div>
       )}

@@ -505,6 +505,69 @@ function discretionaryHistory(txns, exclude, currentMonth, months = 12, modo = '
 }
 
 /**
+ * Distribuicao por CATEGORIA do gasto variavel nas ultimas `months` faturas
+ * fechadas — mesma janela, mesma exclusao e mesma regra de evento do nivel.
+ *
+ * Existe porque o rateio do "ainda deve entrar" usava a distribuicao do PROPRIO
+ * ciclo, e com 6 dias de dado ela e o que calhou de acontecer: uma passagem
+ * aerea a vista no dia 2 virou 45% do peso, e o app projetou mais R$ 2,5k de
+ * viagem pros 23 dias seguintes. Farmacia e assinatura, que postam em bloco,
+ * sofriam do mesmo mal. A distribuicao das faturas fechadas e o que um mes
+ * normal parece; o ciclo em curso entra em cima dela, com peso proporcional ao
+ * que ja se viu (ver `rateioPesos`).
+ */
+function categoryShares(txns, exclude, currentMonth, months = NIVEL_MESES) {
+  const ex = new Set(exclude)
+  const porMes = new Map()
+  for (const t of txns) {
+    if (t.igrp != null || t.kind === 'payment' || ex.has(t.mkey)) continue
+    const m = t.cash ?? t.date.slice(0, 7)
+    if (m >= currentMonth) continue
+    // mesma grade do discretionaryHistory: o mes existe mesmo so com evento
+    if (!porMes.has(m)) porMes.set(m, new Map())
+    if (t.event) continue
+    const c = t.cat || 'Sem categoria'
+    const g = porMes.get(m)
+    g.set(c, (g.get(c) ?? 0) + outflow(t.kind, t.cents))
+  }
+  const janela = [...porMes.keys()].sort().slice(-months)
+  const acc = new Map()
+  for (const m of janela) for (const [c, v] of porMes.get(m)) acc.set(c, (acc.get(c) ?? 0) + v)
+  return normalizeShares(acc)
+}
+
+/** Map cat -> cents  =>  Map cat -> fracao (soma 1). Categoria negativa
+ *  (estorno maior que o gasto) vira zero: peso negativo tiraria das outras. */
+function normalizeShares(porCat) {
+  let total = 0
+  const pos = new Map()
+  for (const [c, v] of porCat) if (v > 0) { pos.set(c, v); total += v }
+  if (total <= 0) return new Map()
+  for (const [c, v] of pos) pos.set(c, v / total)
+  return pos
+}
+
+/**
+ * Pesos do rateio do variavel que ainda falta: historico e ciclo em curso,
+ * misturados na proporcao do que o ciclo ja mostrou.
+ *
+ *   peso(cat) = (1 - w) x share historico(cat) + w x share do ciclo(cat)
+ *   w = dias com dado / dias do ciclo
+ *
+ * No dia 6 o historico manda (w = 0,2); no dia 30 o ciclo manda sozinho — e ai
+ * quase nao ha o que ratear. Sem historico vale o ciclo; sem ciclo vale o
+ * historico; sem nenhum dos dois, quem chama joga tudo em "Sem categoria".
+ */
+function rateioPesos(hist, cicloPorCat, w) {
+  const cur = normalizeShares(cicloPorCat)
+  const wc = !hist.size ? 1 : !cur.size ? 0 : Math.max(0, Math.min(1, w))
+  const out = new Map()
+  for (const [c, s] of hist) out.set(c, (1 - wc) * s)
+  for (const [c, s] of cur) out.set(c, (out.get(c) ?? 0) + wc * s)
+  return out
+}
+
+/**
  * NIVEL do gasto variavel — a base UNICA das duas abas.
  *
  * Existe como funcao propria porque ja divergiu na pratica: o mes corrente
@@ -683,7 +746,7 @@ const DIAS_CICLO = 30
 function goalView({ config, elapsed_share, fixed_outflow_cents, ja_na_fatura_cents,
                     a_entrar_cents, variavelTxns, restante_variavel_cents,
                     travado_cents, reembolso_cents, ciclo_inicio, ciclo_fim,
-                    dias_ciclo: DIAS_CICLO_IN, todayISO }) {
+                    dias_ciclo: DIAS_CICLO_IN, pace, pesos }) {
   const meta = config?.budget
   if (!meta?.total_cents) return null
 
@@ -707,45 +770,22 @@ function goalView({ config, elapsed_share, fixed_outflow_cents, ja_na_fatura_cen
   const variavel_cents = rotinaTxns.reduce((a, t) => a + outflow(t.kind, t.cents), 0)
 
   /*
-   * O extrato ATRASA. O Itau exporta a fatura aberta com lancamentos ate uns 3-5
-   * dias atras; o que voce gastou ontem ainda nao esta la. Isso cria dois vieses
-   * em direcoes opostas, e os dois precisam de denominadores diferentes:
+   * Ritmo, dias com dado e dias restantes vem PRONTOS do monthView (`pace`),
+   * que e onde o nivel tambem os usa. Calcular aqui de novo era ter dois
+   * ritmos na mesma tela — e foi assim que o evento saiu do R$/dia mas
+   * continuou dentro do nivel que projeta o resto do ciclo.
    *
-   *   ritmo  -> divide pelos dias COM DADO. Dividir pelos dias corridos joga
-   *             gasto de 14 dias sobre 18 e subestima o ritmo em ~22%.
+   * O extrato ATRASA: o Itau exporta a fatura aberta com lancamentos ate uns
+   * 3-5 dias atras. Dois vieses em direcoes opostas, dois denominadores:
+   *
+   *   ritmo  -> divide pelos dias COM DADO (ja vem assim no `pace`).
    *   sobra  -> desconta o que provavelmente ja foi gasto e ainda nao postou.
    *             Sem isso o app anuncia folga que nao existe, todo dia.
    */
-  /*
-   * O RITMO so pode olhar o que caiu DENTRO do ciclo.
-   *
-   * Compra atrasada entra nesta fatura carregando a data original — 11 delas,
-   * de 19 e 29/07, num ciclo que comecou em 30/07. Elas sao gasto desta fatura
-   * (o dinheiro sai) mas nao sao gasto DESTES dias, e a janela ia de 19/07 a
-   * 16/08: 29 dias em vez de 18. O ritmo saia ~35% menor que o real, e o
-   * "posso gastar por dia" prometia folga que nao existe.
-   *
-   * Entao: o total da fatura conta tudo; a divisao que produz R$/dia conta so o
-   * que aconteceu na janela do ciclo.
-   */
-  const dentroDoCiclo = ciclo_inicio ? rotinaTxns.filter((t) => t.date >= ciclo_inicio) : rotinaTxns
-  const datas = dentroDoCiclo.map((t) => t.date).filter(Boolean).sort()
-  const inicio = ciclo_inicio ?? datas[0]
-  const ultimo = datas[datas.length - 1]
-  const dias = (a, b) => Math.round((Date.parse(`${b}T00:00:00`) - Date.parse(`${a}T00:00:00`)) / 86400000)
-
   // a duracao vem da janela real (28 a 31 dias), nao de um 30 fixo
   const CICLO = DIAS_CICLO_IN || DIAS_CICLO
-  const dias_corridos = Math.min(CICLO, Math.max(1, Math.round(elapsed_share * CICLO)))
-  const dias_com_dado = inicio && ultimo
-    ? Math.max(1, Math.min(dias_corridos, dias(inicio, ultimo) + 1))
-    : dias_corridos
-  const dias_sem_dado = Math.max(0, dias_corridos - dias_com_dado)
-  // +1: hoje ainda conta como dia de gasto — e evita divisao por zero no ultimo dia
-  const dias_restantes = Math.max(1, CICLO - dias_corridos + 1)
-
-  const ritmo_base_cents = dentroDoCiclo.reduce((a, t) => a + outflow(t.kind, t.cents), 0)
-  const ritmo_cents = Math.round(ritmo_base_cents / dias_com_dado)
+  const { dias_corridos, dias_com_dado, dias_sem_dado, dias_restantes,
+          ritmo_base_cents, ritmo_cents } = pace
   // o que veio atrasado ja esta na fatura e nao se repete: fora do ritmo
   const atrasado_cents = variavel_cents - ritmo_base_cents
   const nao_postado_cents = ritmo_cents * dias_sem_dado
@@ -758,19 +798,16 @@ function goalView({ config, elapsed_share, fixed_outflow_cents, ja_na_fatura_cen
     + ritmo_cents * (CICLO - dias_com_dado)
 
   const porCat = new Map()
-  // peso do rateio = so a ROTINA. Evento nao se repete, entao nao deve puxar
-  // pra si uma fatia do que ainda falta — mesma regra do card "ainda entra".
-  let baseRateio = 0
   for (const t of variavelTxns) {
     const c = t.cat || 'Sem categoria'
-    const g = porCat.get(c) ?? { cents: 0, n: 0, rotina: 0 }
-    const v = outflow(t.kind, t.cents)
-    g.cents += v; g.n++
-    if (!t.event) { g.rotina += v; baseRateio += v }
+    const g = porCat.get(c) ?? { cents: 0, n: 0 }
+    g.cents += outflow(t.kind, t.cents); g.n++
     porCat.set(c, g)
   }
   const metasCat = meta.categories ?? {}
-  const categorias = [...new Set([...porCat.keys(), ...Object.keys(metasCat)])]
+  // categoria que so existe no historico (o Pix que costuma cair e ainda nao
+  // caiu) entra com consumido zero: o rateio passa por ela mesmo assim
+  const categorias = [...new Set([...porCat.keys(), ...Object.keys(metasCat), ...pesos.keys()])]
     .map((cat) => {
       const g = porCat.get(cat) ?? { cents: 0, n: 0 }
       const consumido_cents = g.cents
@@ -785,12 +822,12 @@ function goalView({ config, elapsed_share, fixed_outflow_cents, ja_na_fatura_cen
        * entrar", que rateia o total agregado. O mesmo gasto com dois valores em
        * dois cards da mesma tela, e o usuario sem saber em qual acreditar.
        *
-       * Agora os dois partem do mesmo agregado (o unico numero confiavel) e da
-       * mesma distribuicao observada. `confiavel` continua marcando as
-       * categorias com poucos lancamentos, onde a DIVISAO e fraca mesmo que o
-       * total esteja certo.
+       * Os dois partem do mesmo agregado (o unico numero confiavel) e dos
+       * MESMOS pesos, que vem prontos do monthView (ver `rateioPesos`).
+       * `confiavel` continua marcando as categorias com poucos lancamentos,
+       * onde a DIVISAO e fraca mesmo que o total esteja certo.
        */
-      const peso = baseRateio > 0 ? g.rotina / baseRateio : 0
+      const peso = pesos.get(cat) ?? 0
       const projetado_cents = consumido_cents + Math.round(restante_variavel_cents * peso)
       return {
         cat,
@@ -1018,7 +1055,48 @@ export function monthView(ds, todayISO) {
     const curve = dayCurve(txns, excludeTudo, month)
     elapsed_share = Math.min(1, Math.max(0, curve[Math.min(day, 31)]))
   }
-  const left = Math.max(0, 1 - elapsed_share)
+
+  /*
+   * RITMO do ciclo: so a rotina, so o que caiu dentro da janela, so os dias com
+   * dado. E a base UNICA de tudo o que extrapola — o nivel, o "posso gastar por
+   * dia", o "neste ritmo fecha em" e o rateio por categoria.
+   *
+   * Tres coisas ficam de fora, cada uma por um estrago que aconteceu:
+   *
+   *   evento     uma passagem aerea de R$ 1.618 no dia 2 anualizava pra
+   *              R$ 14,9k de "nivel", e o app projetava mais R$ 2,5k de viagem
+   *              pro resto do mes. O historico ja excluia evento do nivel; o
+   *              ciclo em curso entrava COM ele — a compra que o usuario marcava
+   *              como excecao continuava mandando na projecao.
+   *   atrasado   compra de 29-31/08 posta nesta fatura com a data original. E
+   *              gasto desta fatura, nao gasto DESTES dias: dividir por 8 dias o
+   *              que foram 11 inflava o ritmo em ~35%.
+   *   sem dado   o extrato para uns dias antes de hoje. Dividir pelos dias
+   *              corridos joga o gasto de 6 dias sobre 8 e subestima em 25%.
+   */
+  const variavelTxns = [...variavelNaFatura, ...loggedTxns]
+  const rotinaNoCiclo = variavelTxns.filter((t) => !t.event && t.date >= ciclo_inicio)
+  const ultimaData = rotinaNoCiclo.map((t) => t.date).filter(Boolean).sort().pop()
+  const dias_corridos = Math.max(1, decorridos)
+  const dias_com_dado = ultimaData
+    ? Math.max(1, Math.min(dias_corridos, isoDiffDays(ciclo_inicio, ultimaData) + 1))
+    : dias_corridos
+  const ritmo_base_cents = rotinaNoCiclo.reduce((a, t) => a + outflow(t.kind, t.cents), 0)
+  const pace = {
+    dias_corridos, dias_com_dado,
+    dias_sem_dado: Math.max(0, dias_corridos - dias_com_dado),
+    // +1: hoje ainda conta como dia de gasto — e evita divisao por zero no ultimo dia
+    dias_restantes: Math.max(1, dias_ciclo - dias_corridos + 1),
+    ritmo_base_cents,
+    ritmo_cents: Math.round(ritmo_base_cents / dias_com_dado),
+  }
+  /*
+   * Fracao do ciclo COM DADO. O que falta projetar inclui os dias que ja
+   * passaram mas o extrato ainda nao mostra — senao a fatura estimada pulava
+   * esses dias e saia uns R$ 400 menor do que vem.
+   */
+  const visto = dias_ciclo > 0 ? dias_com_dado / dias_ciclo : elapsed_share
+  const left = Math.max(0, 1 - visto)
 
   /*
    * O ciclo em curso entra no NIVEL, com peso proporcional ao que ja se viu.
@@ -1026,11 +1104,11 @@ export function monthView(ds, todayISO) {
    * Antes o nivel vinha so das 2 faturas fechadas, e a economia comecada agora
    * so apareceria na projecao dois meses depois — o painel mostrava o
    * comportamento antigo enquanto o novo ja estava acontecendo. Agora o mes
-   * parcial e anualizado (gasto / fracao decorrida) e entra como uma observacao
+   * parcial e anualizado (ritmo x dias do ciclo) e entra como uma observacao
    * de peso `elapsed`: com 60% do ciclo visto, vale 0,6 mes contra 1,0 de cada
    * fatura fechada. Peso proporcional a informacao, nao a vontade de acreditar.
    */
-  const emCurso = { cents: realizado_cents + manual_cents, elapsed: elapsed_share }
+  const emCurso = { cents: ritmo_base_cents, elapsed: visto }
   const nivelInfo = variableLevel(txns, excludeTudo, fatura_alvo, emCurso)
   const baseline_cents = nivelInfo.nivel
 
@@ -1042,6 +1120,19 @@ export function monthView(ds, todayISO) {
     p50: Math.round(nivelInfo.d.p50 * left),
     p90: Math.round(nivelInfo.d.p90 * left),
   }
+
+  /*
+   * Pesos do rateio por categoria — ver `rateioPesos`. Historico da MESMA
+   * janela que da o nivel; o ciclo em curso entra pela rotina (evento nao se
+   * repete, entao nao puxa pra si uma fatia do que ainda falta).
+   */
+  const cicloPorCat = new Map()
+  for (const t of variavelTxns) {
+    if (t.event) continue
+    const c = t.cat || 'Sem categoria'
+    cicloPorCat.set(c, (cicloPorCat.get(c) ?? 0) + outflow(t.kind, t.cents))
+  }
+  const pesos = rateioPesos(categoryShares(txns, excludeTudo, fatura_alvo), cicloPorCat, visto)
 
   /*
    * Duas totalizacoes diferentes, e misturar as duas engana:
@@ -1107,7 +1198,7 @@ export function monthView(ds, todayISO) {
     remaining, fatura, total, income_cents, fixed_outflow_cents, fixed_card_cents, net,
     ja_na_fatura_cents, a_entrar_cents,
     baseline_cents, last_statement: last, fatura_alvo, em_curso: emCurso,
-    ciclo_inicio, ciclo_fim, dias_ciclo,
+    ciclo_inicio, ciclo_fim, dias_ciclo, pace,
     nivel_regime: nivelInfo.regime, a_entrar_itens,
 
     /*
@@ -1122,10 +1213,12 @@ export function monthView(ds, todayISO) {
      *   variavel o resto do ciclo. Este e o unico pedaco que responde ao que
      *            voce fizer amanha.
      *
-     * O rateio do variavel por categoria e proporcional ao que ja se gastou no
-     * proprio ciclo — nao e projecao por categoria (que ja provou ser ruido com
-     * poucos lancamentos), e sim a distribuicao observada aplicada ao total
-     * agregado, que e o unico numero em que confio.
+     * O rateio do variavel por categoria nao e projecao por categoria (que ja
+     * provou ser ruido com poucos lancamentos): e uma distribuicao aplicada ao
+     * total agregado, que e o unico numero em que confio. A distribuicao vem
+     * das ultimas faturas fechadas, com o ciclo em curso entrando aos poucos
+     * (ver `rateioPesos`) — a do proprio ciclo, sozinha, era o que calhou de
+     * acontecer em meia duzia de dias.
      */
     falta_por_categoria: (() => {
       const porCat = new Map()
@@ -1138,26 +1231,16 @@ export function monthView(ds, todayISO) {
       for (const s of a_entrar_itens) add(s.category, 'fixo_cents', s.cents)
 
       /*
-       * Duas somas diferentes de proposito.
-       *
        *   ja_cents  TUDO que ja se gastou na categoria neste ciclo, evento
        *             incluso. E fato consumado: a barra mostra isso.
-       *   base      o peso do rateio, SEM evento. Uma festa nao serve de
-       *             previsao pro resto do mes — se servisse, o rateio jogaria o
-       *             que falta desproporcionalmente na categoria da festa.
+       *   variavel  o que falta, pelos MESMOS pesos da regua da meta. Evento
+       *             fica fora do peso: uma passagem nao serve de previsao pro
+       *             resto do mes — se servisse, o rateio jogaria o que falta
+       *             desproporcionalmente na categoria da viagem.
        */
-      const gastoCat = new Map()
-      let base = 0
-      for (const t of [...variavelNaFatura, ...loggedTxns]) {
-        const c = t.cat || 'Sem categoria'
-        const v = outflow(t.kind, t.cents)
-        add(c, 'ja_cents', v)
-        if (t.event) continue // evento nao se repete: nao serve de peso pro resto
-        gastoCat.set(c, (gastoCat.get(c) ?? 0) + v)
-        base += v
-      }
-      if (base > 0) {
-        for (const [c, v] of gastoCat) add(c, 'variavel_cents', Math.round(remaining.p50 * (v / base)))
+      for (const t of variavelTxns) add(t.cat, 'ja_cents', outflow(t.kind, t.cents))
+      if (pesos.size) {
+        for (const [c, p] of pesos) add(c, 'variavel_cents', Math.round(remaining.p50 * p))
       } else if (remaining.p50 > 0) {
         add('Sem categoria', 'variavel_cents', remaining.p50)
       }
@@ -1177,8 +1260,9 @@ export function monthView(ds, todayISO) {
     })(),
     goal: goalView({
       config, elapsed_share, fixed_outflow_cents, ja_na_fatura_cents, a_entrar_cents,
-      variavelTxns: [...variavelNaFatura, ...loggedTxns], todayISO, reembolso_cents,
-      ciclo_inicio, ciclo_fim, dias_ciclo,
+      variavelTxns, reembolso_cents, ciclo_inicio, ciclo_fim, dias_ciclo,
+      // ritmo e pesos do rateio, os MESMOS do nivel e do card "ainda deve entrar"
+      pace, pesos,
       // a MESMA fatia que o card "ainda deve entrar" rateia, pra os dois cards
       // da mesma tela nao darem numeros diferentes pro mesmo gasto
       restante_variavel_cents: remaining.p50,

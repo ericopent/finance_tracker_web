@@ -85,9 +85,10 @@ function LinhaCategoria({ c, elapsed, maiorConsumo }) {
       </span>
 
       {/*
-        Distancia da categoria = projetado (consumido / fracao decorrida) menos
-        a meta. Vem com "~" quando a categoria tem menos de 8 lancamentos: com
-        poucos pontos numa quinzena a anualizacao e indicacao, nao previsao.
+        Distancia da categoria = projetado (consumido + a fatia dela no variavel
+        que ainda falta, pelos pesos do engine) menos a meta. Vem com "~" quando
+        a categoria tem menos de 8 lancamentos: com poucos pontos numa quinzena
+        a divisao e indicacao, nao previsao.
       */}
       <span
         className={clsx(
