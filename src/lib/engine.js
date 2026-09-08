@@ -720,6 +720,8 @@ function dayCurve(txns, exclude, currentMonth) {
 // ---------------------------------------------------------------- 4. meta
 
 const DIAS_CICLO = 30
+/** Teto do deslize entre data da compra e fatura em que ela cai (ver `pace`). */
+const LAG_MAX_DIAS = 7
 
 /**
  * Meta do mes -> quanto ainda da pra gastar, e por dia.
@@ -785,7 +787,7 @@ function goalView({ config, elapsed_share, fixed_outflow_cents, ja_na_fatura_cen
   // a duracao vem da janela real (28 a 31 dias), nao de um 30 fixo
   const CICLO = DIAS_CICLO_IN || DIAS_CICLO
   const { dias_corridos, dias_com_dado, dias_sem_dado, dias_restantes,
-          ritmo_base_cents, ritmo_cents } = pace
+          dias_a_projetar, dias_atrasados, ritmo_base_cents, ritmo_cents } = pace
   // o que veio atrasado ja esta na fatura e nao se repete: fora do ritmo
   const atrasado_cents = variavel_cents - ritmo_base_cents
   const nao_postado_cents = ritmo_cents * dias_sem_dado
@@ -793,9 +795,10 @@ function goalView({ config, elapsed_share, fixed_outflow_cents, ja_na_fatura_cen
   const comprometido_cents = ja_na_fatura_cents + a_entrar_cents + nao_postado_cents
   const por_dia_cents = Math.round(disponivel_cents / dias_restantes)
 
-  // se mantiver o ritmo atual ate o fim: projeta o buraco do atraso + o futuro
+  // se mantiver o ritmo atual ate o fim: o buraco do atraso + os dias de gasto
+  // que a fatura ainda vai receber (ver `dias_a_projetar` no monthView)
   const no_ritmo_cents = ja_na_fatura_cents + a_entrar_cents + fixed_outflow_cents
-    + ritmo_cents * (CICLO - dias_com_dado)
+    + ritmo_cents * dias_a_projetar
 
   const porCat = new Map()
   for (const t of variavelTxns) {
@@ -858,6 +861,7 @@ function goalView({ config, elapsed_share, fixed_outflow_cents, ja_na_fatura_cen
     meta_total_cents: meta.total_cents,
     teto_fatura_cents, comprometido_cents, disponivel_cents,
     dias_ciclo: CICLO, dias_corridos, dias_restantes, dias_com_dado, dias_sem_dado,
+    dias_atrasados, dias_a_projetar, ritmo_base_cents,
     ciclo_fim,
     nao_postado_cents, eventos_cents, atrasado_cents, ciclo_inicio,
     /*
@@ -897,8 +901,14 @@ function goalView({ config, elapsed_share, fixed_outflow_cents, ja_na_fatura_cen
      */
     decomposicao: {
       travado_cents,
-      teto_variavel_cents: meta.total_cents - travado_cents,
-      variavel_projetado_cents: variavel_cents + ritmo_cents * (CICLO - dias_com_dado),
+      /*
+       * Evento tambem consome a meta antes do dia a dia: nao e travado (nao se
+       * repete) nem rotina (nao entra no ritmo), mas o dinheiro saiu. Sem ele
+       * aqui a linha dizia "2,2k pro dia a dia" com uma passagem de 1,6k ja
+       * paga, e travado + dia a dia nao fechava com o "neste ritmo".
+       */
+      teto_variavel_cents: meta.total_cents - travado_cents - eventos_cents,
+      variavel_projetado_cents: variavel_cents + ritmo_cents * dias_a_projetar,
       eventos_cents,
     },
   }
@@ -1082,8 +1092,27 @@ export function monthView(ds, todayISO) {
     ? Math.max(1, Math.min(dias_corridos, isoDiffDays(ciclo_inicio, ultimaData) + 1))
     : dias_corridos
   const ritmo_base_cents = rotinaNoCiclo.reduce((a, t) => a + outflow(t.kind, t.cents), 0)
+  /*
+   * A fatura DESLIZA uns dias em relacao ao ciclo: compra de 29-31/08 processa
+   * depois do fechamento e cai nesta fatura; pela mesma regra, a compra de
+   * 28-30/09 vai cair na proxima. A fatura tem ~30 dias de gasto, so que
+   * deslocados. O que ja esta nela cobre `dias_atrasados + dias_com_dado` dias
+   * de gasto; o que falta projetar e o resto ate o fim do ciclo — e nao "ciclo
+   * menos dias com dado", que contava os dias atrasados duas vezes: o "neste
+   * ritmo" saia ~R$ 740 acima (3 dias a R$ 247) e a fatura estimada idem.
+   *
+   * O deslize e medido pela compra mais antiga da fatura aberta, com teto de 7
+   * dias: uma contestacao de dois meses atras nao pode virar "lag".
+   */
+  const primeiraAtrasada = variavelTxns
+    .filter((t) => t.kind === 'purchase' && t.date < ciclo_inicio)
+    .map((t) => t.date).sort()[0]
+  const dias_atrasados = primeiraAtrasada
+    ? Math.max(0, Math.min(LAG_MAX_DIAS, isoDiffDays(primeiraAtrasada, ciclo_inicio)))
+    : 0
+  const dias_a_projetar = Math.max(0, dias_ciclo - dias_com_dado - dias_atrasados)
   const pace = {
-    dias_corridos, dias_com_dado,
+    dias_corridos, dias_com_dado, dias_atrasados, dias_a_projetar,
     dias_sem_dado: Math.max(0, dias_corridos - dias_com_dado),
     // +1: hoje ainda conta como dia de gasto — e evita divisao por zero no ultimo dia
     dias_restantes: Math.max(1, dias_ciclo - dias_corridos + 1),
@@ -1091,12 +1120,12 @@ export function monthView(ds, todayISO) {
     ritmo_cents: Math.round(ritmo_base_cents / dias_com_dado),
   }
   /*
-   * Fracao do ciclo COM DADO. O que falta projetar inclui os dias que ja
-   * passaram mas o extrato ainda nao mostra — senao a fatura estimada pulava
-   * esses dias e saia uns R$ 400 menor do que vem.
+   * Fracao do ciclo COM DADO — pesa o ciclo em curso no nivel e no rateio.
+   * O que falta projetar (`left`) e outra conta: os dias de gasto que a fatura
+   * ainda vai receber, incluindo os que ja passaram e o extrato nao mostra.
    */
   const visto = dias_ciclo > 0 ? dias_com_dado / dias_ciclo : elapsed_share
-  const left = Math.max(0, 1 - visto)
+  const left = dias_ciclo > 0 ? dias_a_projetar / dias_ciclo : Math.max(0, 1 - visto)
 
   /*
    * O ciclo em curso entra no NIVEL, com peso proporcional ao que ja se viu.

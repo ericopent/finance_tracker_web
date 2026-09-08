@@ -254,13 +254,21 @@ export default function MetaCard({ v }) {
           <div className="text-[11px] text-gap-muted mt-1 flex items-center gap-1">
             {acimaDoRitmo ? <TrendingUp size={11} className="text-gap-red" />
               : <TrendingDown size={11} className="text-gap-green" />}
-            {acimaDoRitmo
-              ? `precisa cortar ${brNum(corte * 100, 0)}%`
-              : 'dentro do orçamento'}
+            {/* com o teto ja estourado o "corte" passa de 100%, que nao existe */}
+            {!acimaDoRitmo ? 'dentro do orçamento'
+              : g.por_dia_cents <= 0 ? 'teto já estourado: cada real é estouro'
+              : `precisa cortar ${brNum(corte * 100, 0)}%`}
           </div>
+          {/* a base do R$/dia e SO o que caiu dentro do ciclo; mostrar o total
+              da rotina aqui fazia "2,4k em 6 dias" ao lado de "247/dia" */}
           <div className="text-[10.5px] text-gap-muted mt-0.5">
-            {moneyShort(g.variavel_cents)} em {g.dias_com_dado} dias
+            {moneyShort(g.ritmo_base_cents)} em {g.dias_com_dado} dias do ciclo
           </div>
+          {g.atrasado_cents > 0 && (
+            <div className="text-[10.5px] text-gap-muted mt-0.5">
+              + {moneyShort(g.atrasado_cents)} de antes do ciclo, já na fatura
+            </div>
+          )}
         </div>
 
         <div>
@@ -300,6 +308,12 @@ export default function MetaCard({ v }) {
               <span className="text-gap-muted">Meta {moneyShort(g.meta_total_cents)}</span>
               <span className="text-gap-muted">−</span>
               <span>travado <b>{moneyShort(g.decomposicao.travado_cents)}</b></span>
+              {g.decomposicao.eventos_cents > 0 && (
+                <>
+                  <span className="text-gap-muted">−</span>
+                  <span>evento <b>{moneyShort(g.decomposicao.eventos_cents)}</b></span>
+                </>
+              )}
               <span className="text-gap-muted">=</span>
               <span className="text-gap-navy font-semibold">
                 {moneyShort(g.decomposicao.teto_variavel_cents)} pro dia a dia
