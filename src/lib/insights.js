@@ -368,13 +368,21 @@ export function leversView(ds, todayISO) {
   const eventos_cents = eventos.reduce((a, e) => a + e.cents, 0)
 
   // ---- resumo contra a meta
+  /*
+   * A meta e do MES INTEIRO (mesma regra do goalView no engine): fatura + fixos
+   * que nao passam no cartao. O que sobra pra fatura e o teto — e e contra o
+   * teto que se mede o corte. Comparar a fatura com a meta cheia escondia os
+   * R$ 1,6k de seguro, clube e surf e dizia que faltava menos do que falta.
+   */
   const meta = config?.budget?.total_cents || null
+  const reembolso = assinaturas.filter((a) => a.reembolsado).reduce((a, s) => a + s.cents, 0)
+  const teto = meta ? meta - fora_cents + reembolso : null
   const ultima_cents = ultima ? totalMes(ultima) : 0
 
   return {
     fatura_alvo: alvo, ultima, ultima_cents, nivel3, nivel12, meses_fechadas: fechadas.length,
     incompletas,
-    meta, gap: meta ? nivel3 - meta : null,
+    meta, teto, gap: teto ? nivel3 - teto : null,
     assinaturas, assinaturas_cents, foraDoCartao, fora_cents,
     frequentes, frequentes_cents,
     contratos, parcelas_alvo, runoff,

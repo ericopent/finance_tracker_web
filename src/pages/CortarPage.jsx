@@ -289,7 +289,7 @@ export default function CortarPage() {
           { label: `Última fechada · ${monthLabel(v.ultima)}`, value: money(v.ultima_cents), tone: 'pos' },
           { label: 'Média 3 fechadas', value: money(v.nivel3), sub: `mediana 12: ${moneyShort(v.nivel12)}` },
           ...(v.meta ? [
-            { label: 'Meta', value: money(v.meta) },
+            { label: 'Teto da fatura', value: money(v.teto), sub: `meta ${moneyShort(v.meta)} − ${moneyShort(v.fora_cents)} fora do cartão` },
             { label: v.gap > 0 ? 'Falta cortar' : 'Folga', value: money(Math.abs(v.gap)), tone: v.gap > 0 ? 'pos' : 'neg', sub: 'por mês, vs média 3' },
           ] : []),
         ]}
@@ -312,10 +312,11 @@ export default function CortarPage() {
         <div className="text-[12.5px] font-semibold text-gap-navy flex items-center gap-1.5 mb-1">
           <Target size={14} className="text-gap-green" />
           {v.meta && v.gap > 0
-            ? <>Pra fechar em {moneyShort(v.meta)}, faltam {money(v.gap, 0)} por mês</>
-            : v.meta ? <>A média já cabe na meta de {moneyShort(v.meta)}</> : <>Sem meta definida — defina na aba Mês</>}
+            ? <>Pra fatura caber em {moneyShort(v.teto)}, faltam {money(v.gap, 0)} por mês</>
+            : v.meta ? <>A média já cabe no teto de {moneyShort(v.teto)}</> : <>Sem meta definida — defina na aba Mês</>}
         </div>
         <div className="text-[11.5px] text-gap-muted leading-relaxed">
+          {v.meta && <>A meta de {moneyShort(v.meta)} é do mês inteiro; tirando {moneyShort(v.fora_cents)} que não passam no cartão, sobram {moneyShort(v.teto)} pra fatura.{' '}</>}
           Parcelas devolvem <b className="text-gap-green">{money(em6, 0)}/mês</b> sozinhas até {monthLabel(mes6)}.
           Assinaturas canceláveis: <b>{money(v.assinaturas_cents, 0)}/mês</b>.
           Dia a dia acima do seu normal: <b>{money(acima, 0)}/mês</b>.
