@@ -3,6 +3,7 @@ import {
   readFile, appendJsonl, rewriteJsonl, updateJson, putJson, parseJsonl, listDir, getToken,
 } from './github'
 import { monthView, cashflow, hydrate, merchantKey, monthAdd } from './engine'
+import { historyView, leversView } from './insights'
 import { todayISO } from './money'
 
 // caminhos dentro do repo PRIVADO de dados
@@ -90,6 +91,32 @@ export function useCashflow(horizon = 12, openingCents = 0) {
     }
   }
   return { ...q, data, error: q.error ?? calcError }
+}
+
+/** Calculo derivado do dataset, com a excecao capturada (ver useMonthView). */
+function useDerived(fn, rotulo) {
+  const q = useDataset()
+  let data
+  let calcError = null
+  if (q.data) {
+    try {
+      data = fn(q.data)
+    } catch (e) {
+      calcError = e instanceof Error ? e : new Error(String(e))
+      calcError.message = `falha ao calcular ${rotulo}: ${calcError.message}`
+    }
+  }
+  return { ...q, data, error: q.error ?? calcError }
+}
+
+/** Historico: ultimas faturas abertas por bloco, categoria e lojista. */
+export function useHistory(n = 13) {
+  return useDerived((ds) => historyView(ds, todayISO(), n), 'o histórico')
+}
+
+/** Alavancas: o que da pra fazer pra fatura cair, ranqueado por R$/mes. */
+export function useLevers() {
+  return useDerived((ds) => leversView(ds, todayISO()), 'as alavancas')
 }
 
 /** Autocomplete: lojistas do historico, mais usados primeiro, com a categoria. */

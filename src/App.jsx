@@ -1,8 +1,10 @@
 import { useState } from 'react'
 import { NavLink, Routes, Route, Navigate } from 'react-router-dom'
-import { CalendarDays, LineChart, Target, Upload, Tag, LogOut } from 'lucide-react'
+import { CalendarDays, LineChart, Target, Upload, Tag, LogOut, History, Scissors } from 'lucide-react'
 import clsx from 'clsx'
 import MesCorrentePage from './pages/MesCorrentePage'
+import HistoricoPage from './pages/HistoricoPage'
+import CortarPage from './pages/CortarPage'
 import FluxoPage from './pages/FluxoPage'
 import PlanoPage from './pages/PlanoPage'
 import ImportarPage from './pages/ImportarPage'
@@ -10,8 +12,15 @@ import ClassificarPage from './pages/ClassificarPage'
 import LoginPage from './pages/LoginPage'
 import { getToken, clearAuth } from './lib/github'
 
+/*
+ * Ordem = ordem das perguntas: o que esta acontecendo (Mes), pra onde foi
+ * (Historico), o que fazer (Cortar), o que vem (Fluxo, Plano). Classificar e
+ * Importar sao manutencao e ficam por ultimo.
+ */
 const NAV = [
   { to: '/mes', label: 'Mês', icon: CalendarDays },
+  { to: '/historico', label: 'Histórico', icon: History },
+  { to: '/cortar', label: 'Cortar', icon: Scissors },
   { to: '/fluxo', label: 'Fluxo', icon: LineChart },
   { to: '/plano', label: 'Plano', icon: Target },
   { to: '/classificar', label: 'Classificar', icon: Tag },
@@ -48,18 +57,19 @@ function Nav() {
         ><LogOut size={13} />Sair</button>
       </aside>
 
-      {/* tab bar do celular — pb-safe respeita a barra de gestos do iPhone */}
+      {/* tab bar do celular — pb-safe respeita a barra de gestos do iPhone.
+          Sete abas em 375px: rotulo menor e sem folga lateral, senao "Classificar" quebra. */}
       <nav className="md:hidden fixed bottom-0 inset-x-0 z-40 bg-gap-navy flex pb-safe">
         {NAV.map(({ to, label, icon: Icon, soon }) => (
           <NavLink
             key={to} to={to}
             className={({ isActive }) => clsx(
-              'flex-1 flex flex-col items-center gap-0.5 py-2 text-[10.5px] transition-colors',
+              'flex-1 min-w-0 flex flex-col items-center gap-0.5 py-2 text-[9.5px] leading-none transition-colors',
               isActive ? 'text-gap-blue font-semibold' : 'text-white/55',
               soon && 'opacity-35 pointer-events-none'
             )}
           >
-            <Icon size={18} />{label}
+            <Icon size={17} /><span className="truncate max-w-full">{label}</span>
           </NavLink>
         ))}
       </nav>
@@ -79,6 +89,8 @@ export default function App() {
         <Routes>
           <Route path="/" element={<Navigate to="/mes" replace />} />
           <Route path="/mes" element={<MesCorrentePage />} />
+          <Route path="/historico" element={<HistoricoPage />} />
+          <Route path="/cortar" element={<CortarPage />} />
           <Route path="/fluxo" element={<FluxoPage />} />
           <Route path="/plano" element={<PlanoPage />} />
           <Route path="/classificar" element={<ClassificarPage />} />

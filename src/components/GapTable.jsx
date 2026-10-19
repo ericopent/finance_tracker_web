@@ -2,13 +2,16 @@ import clsx from 'clsx'
 
 /**
  * GapTable — portada do App Master.
- * columns: [{ key, label, align?, colorSign?, fmt? }]
+ * columns: [{ key, label, align?, colorSign?, fmt?, mobile? }]
+ *   mobile: false esconde a coluna abaixo de 640px — no celular cabem 3-4
+ *   colunas; o resto ou some ou quebra o valor em duas linhas.
  */
 export default function GapTable({ columns = [], rows = [], wrap = false, maxHeight = 540, rowClass, empty = 'sem dados' }) {
+  const colCls = (c) => (c.mobile === false ? 'hidden sm:table-cell' : undefined)
   const body = (
     <table className="gap-table">
       <thead>
-        <tr>{columns.map((c) => <th key={c.key}>{c.label}</th>)}</tr>
+        <tr>{columns.map((c) => <th key={c.key} className={colCls(c)}>{c.label}</th>)}</tr>
       </thead>
       <tbody>
         {rows.map((row, ri) => (
@@ -22,7 +25,7 @@ export default function GapTable({ columns = [], rows = [], wrap = false, maxHei
                   ? sv.startsWith('+') ? 'var-pos' : sv.startsWith('−') || sv.startsWith('-') ? 'var-neg' : ''
                   : ''
               return (
-                <td key={c.key} className={clsx('num', signCls)} style={c.align ? { textAlign: c.align } : undefined}>
+                <td key={c.key} className={clsx('num', signCls, colCls(c))} style={c.align ? { textAlign: c.align } : undefined}>
                   {val}
                 </td>
               )
