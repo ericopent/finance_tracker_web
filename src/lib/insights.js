@@ -268,7 +268,7 @@ export function leversView(ds, todayISO) {
   // ---- 2. frequentes: quase todo mes, valor variavel, nao e assinatura nem parcela
   const porLoj = new Map()
   for (const t of txns) {
-    if (t.kind !== 'purchase' || t.igrp != null || !t.mkey || keys.has(t.mkey)) continue
+    if (t.kind !== 'purchase' || t.igrp != null || !t.mkey || keys.has(t.mkey) || t.event) continue
     if (!ult6.includes(t.cash)) continue
     const g = porLoj.get(t.mkey) ?? { key: t.mkey, label: t.desc, category: t.cat ?? null, porMes: new Map() }
     g.porMes.set(t.cash, (g.porMes.get(t.cash) ?? 0) + t.cents)
@@ -311,9 +311,13 @@ export function leversView(ds, todayISO) {
   }
 
   // ---- 4. categorias: variavel ult3 vs mediana 12 (zeros preenchidos)
+  // Evento fica FORA daqui, de frequentes e de lojistas em alta: a festa ja foi
+  // marcada como excecao, e a mesma regra do nivel projetado. Sem isso Lazer
+  // aparecia R$ 1k "acima do normal" por duas compras que o usuario ja tinha
+  // dito que nao se repetem. O card "o que inflou a ultima fatura" e o lugar delas.
   const catMes = new Map() // cat -> Map(month -> cents)
   for (const t of txns) {
-    if (!gasto(t) || !ult12.includes(t.cash)) continue
+    if (!gasto(t) || !ult12.includes(t.cash) || t.event) continue
     if (blocoDe(t, keys) !== 'variavel') continue
     const c = t.cat || SEM_CATEGORIA
     if (!catMes.has(c)) catMes.set(c, new Map())
@@ -338,7 +342,7 @@ export function leversView(ds, todayISO) {
   const ant9 = ult12.slice(0, Math.max(0, ult12.length - 3))
   const lojMes = new Map()
   for (const t of txns) {
-    if (t.kind !== 'purchase' || !t.mkey || !ult12.includes(t.cash)) continue
+    if (t.kind !== 'purchase' || !t.mkey || !ult12.includes(t.cash) || t.event) continue
     if (blocoDe(t, keys) !== 'variavel') continue
     const g = lojMes.get(t.mkey) ?? { key: t.mkey, label: t.desc, category: t.cat ?? null, porMes: new Map() }
     g.porMes.set(t.cash, (g.porMes.get(t.cash) ?? 0) + t.cents)
