@@ -11,7 +11,7 @@
  * partir do SQLite, que fica desatualizado) apague o que foi importado no
  * celular.
  */
-import { merchantKey } from './engine.js'
+import { memoriaPorPrefixo, merchantKey } from './engine.js'
 
 // ---------------------------------------------------------------- CSV
 
@@ -196,7 +196,7 @@ export function classifyKind(desc, cents) {
 /** memoria aprendida > regras > nada. Mesma ordem do backfill. */
 export function classify(desc, config) {
   const key = merchantKey(desc)
-  const mem = config?.memory?.[key]
+  const mem = config?.memory?.[key] ?? memoriaPorPrefixo(config?.memory, key)
   if (mem) return { cat: mem[0] ?? null, sub: mem[1] ?? null, via: 'memoria' }
 
   const plain = String(desc ?? '').normalize('NFKD').replace(/[̀-ͯ]/g, '')

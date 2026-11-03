@@ -154,12 +154,14 @@ export function hydrate(ledger, manual = [], statements = [], config = null) {
    */
   const eventos = config?.events ?? {}
   const comMemoria = (t) => {
-    const mkey = semMes(t.mkey)
+    // fatura fechada ja gravada com a cidade na chave: recalcula pela descricao (largura fixa)
+    const k0 = t.desc && ITAU_LARGURA_FIXA.test(t.desc) ? merchantKey(t.desc) : t.mkey
+    const mkey = semMes(k0)
     const base = mkey === t.mkey ? t : { ...t, mkey }
     const ev = eventos[eventKey(base)] ?? eventos[eventKey(t)]
     const comEv = ev === 1 ? { ...base, event: true } : base
     if (comEv.cat || !mkey) return comEv
-    const m = mem[mkey] ?? mem[t.mkey]
+    const m = mem[mkey] ?? mem[t.mkey] ?? memoriaPorPrefixo(mem, mkey)
     return m ? { ...comEv, cat: m[0] ?? null, sub: m[1] ?? null } : comEv
   }
   const substituidos = new Set(statements.map((s) => s.ref))
@@ -231,10 +233,36 @@ export function semMes(key) {
   return limpo.length >= 3 && limpo.length < toks.length ? limpo.join(' ') : key
 }
 
+/**
+ * Fatura FECHADA do Itau vem em largura fixa: nome (22) + cidade (13) + pais (3),
+ * ex. 'Dl          *Uberrides Sao Paulo     Bra'. Sem cortar, a chave virava
+ * "DL UBERRIDES SAO PAULO BRA" e nao casava com "DL UBERRIDES" da memoria — 43
+ * lojistas ja conhecidos caiam como "sem categoria" (nov/26, 03/11/2026).
+ */
+const ITAU_LARGURA_FIXA = /^(.{22}) .{13} [A-Za-z]{3}$/
+
+/**
+ * Compra internacional (e a fatura ABERTA em geral) cola cidade+pais no nome:
+ * "ANTHROPIC CLAUDE SUBSAN FRANCISCOUSA". Nenhuma chave exata casa; aceita a
+ * da memoria que e PREFIXO desta, com 6+ letras e o resto terminando no pais
+ * colado. A mais longa vence. Sem o pais no fim, nao arrisca ("BAR" x "BARRA").
+ */
+const PAIS_COLADO = /(BRA|USA|GBR|PRT|ESP|FRA|DEU|ITA|NLD|IRL|CAN|MEX|ARG|CHL|URY|CHE|JPN|AUS)$/
+export function memoriaPorPrefixo(mem, key) {
+  if (!key || !mem || !PAIS_COLADO.test(key)) return null
+  let best = null
+  for (const k of Object.keys(mem)) {
+    if (k.length >= 6 && k.length < key.length && key.startsWith(k) && (!best || k.length > best.length)) best = k
+  }
+  return best ? mem[best] : null
+}
+
 /** Espelha scripts/backfill.py::merchant_key — tem que casar, senao o
  *  autocomplete e a memoria nao encontram o lancamento feito no celular. */
 export function merchantKey(desc) {
-  return String(desc ?? '')
+  const raw = String(desc ?? '')
+  const fixo = raw.match(ITAU_LARGURA_FIXA)
+  return (fixo ? fixo[1] : raw)
     .normalize('NFKD')
     // marcas de acento soltas pelo NFKD. Escapado de proposito: com os
     // caracteres combinantes crus, qualquer ferramenta que reencode o arquivo
