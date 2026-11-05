@@ -257,6 +257,27 @@ export function memoriaPorPrefixo(mem, key) {
   return best ? mem[best] : null
 }
 
+/**
+ * Esta assinatura ja postou neste ciclo? Mesma relacao de prefixo acima, mas no
+ * sentido inverso: aqui a chave CURTA e a do recorrente e a LONGA e a postada.
+ *
+ * A fatura FECHADA vem em largura fixa e o merchantKey corta nos 22 primeiros
+ * chars -> "MEDYCORP ASS PAC 2". A ABERTA cola cidade+pais no nome ->
+ * "MEDYCORP ASS PAC 2RIO DE JANEIRBRA". Como o recorrente e detectado nos meses
+ * fechados e a postagem do mes corrente vem da aberta, a comparacao exata nunca
+ * casava: os mesmos R$ 488 do Medycorp entravam em `ja_na_fatura` E em
+ * `a_entrar`, e o disponivel do mes aparecia R$ 488 menor do que e.
+ */
+export function postouComoChave(postadas, key) {
+  if (!key) return false
+  if (postadas.has(key)) return true
+  if (key.length < 6) return false            // "BAR" casaria com meio mundo
+  for (const p of postadas) {
+    if (p && p.length > key.length && p.startsWith(key) && PAIS_COLADO.test(p)) return true
+  }
+  return false
+}
+
 /** Espelha scripts/backfill.py::merchant_key — tem que casar, senao o
  *  autocomplete e a memoria nao encontram o lancamento feito no celular. */
 export function merchantKey(desc) {
@@ -1221,7 +1242,9 @@ export function monthView(ds, todayISO) {
   if (temFaturaAberta) {
     ja_na_fatura_cents = naFaturaAberta.reduce((a, t) => a + outflow(t.kind, t.cents), 0) + manual_cents
     const jaPostou = new Set(naFaturaAberta.map((t) => t.mkey))
-    a_entrar_itens = recorrentesCartao.filter((s) => s.key && !jaPostou.has(s.key))
+    // prefixo + pais colado, nao igualdade: a fatura aberta escreve o lojista
+    // mais largo que a fechada (ver postouComoChave)
+    a_entrar_itens = recorrentesCartao.filter((s) => s.key && !postouComoChave(jaPostou, s.key))
     a_entrar_cents = a_entrar_itens.reduce((a, s) => a + s.cents, 0)
   } else {
     // sem fatura aberta, tudo e projecao: parcelas + recorrentes + o que voce lancou
