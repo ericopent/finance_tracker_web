@@ -177,7 +177,9 @@ export function refMonthFromName(name) {
 
 // ---------------------------------------------------------------- kind (espelha backfill.py)
 
-const RE_PAYMENT = /PAGAMENTO\s+EFETUADO|PAGTO\s+FATURA/i
+// "Pagamento Com Saldo" (fatura dez/26): quitacao da fatura anterior debitada da conta. Sem ele aqui, o valor
+// negativo caia em `refund` e abatia R$ 12,6k do mes como se fosse estorno.
+const RE_PAYMENT = /PAGAMENTO\s+EFETUADO|PAGAMENTO\s+COM\s+SALDO|PAGTO\s+FATURA/i
 const RE_INTEREST = /JUROS|ENCARGO|MORA|MULTA\s+POR\s+ATRASO|ROTATIV/i
 const RE_FEE = /\bIOF\b|ANUIDADE|TARIFA|CESTA\s*SERVICOS/i
 const RE_REFUND = /ESTORNO|CHARGEBACK|CREDITO\s+PROG/i
